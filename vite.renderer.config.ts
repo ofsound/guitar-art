@@ -6,7 +6,9 @@ export default defineConfig({
   root: resolve(__dirname, 'src/renderer'),
   plugins: [react()],
   build: {
-    target: 'esnext'
+    target: 'esnext',
+    outDir: resolve(__dirname, '.vite/renderer/main_window'),
+    emptyOutDir: true
   },
   esbuild: {
     target: 'esnext'

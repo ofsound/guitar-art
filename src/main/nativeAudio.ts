@@ -136,7 +136,8 @@ function loadNativeAudioEngine(): NativeAudioEngine | null {
   const candidates = [
     path.join(process.cwd(), 'native/audio-engine/index.js'),
     path.join(process.cwd(), 'native/audio-engine/audio_engine.node'),
-    path.join(process.resourcesPath ?? '', 'native/audio-engine/index.js')
+    path.join(process.resourcesPath ?? '', 'audio-engine/index.js'),
+    path.join(process.resourcesPath ?? '', 'audio-engine/audio_engine.darwin-arm64.node')
   ];
 
   for (const candidate of candidates) {

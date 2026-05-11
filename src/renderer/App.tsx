@@ -5,6 +5,9 @@ import { getAudioClient } from './audioClient';
 import { useAudioFeatures } from './useAudioFeatures';
 import { VisualSynth } from './VisualSynth';
 
+const INPUT_GAIN_MIN = 0.2;
+const INPUT_GAIN_MAX = 10;
+
 export function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [config, setConfig] = useState<AudioStartConfig>(DEFAULT_START_CONFIG);
@@ -107,11 +110,13 @@ export function App() {
         </section>
 
         <section className="control-group">
-          <label>Input gain {config.inputGain.toFixed(2)}</label>
+          <label>
+            Input gain {formatGainDb(config.inputGain)} ({config.inputGain.toFixed(2)}x)
+          </label>
           <input
             type="range"
-            min="0.2"
-            max="4"
+            min={INPUT_GAIN_MIN}
+            max={INPUT_GAIN_MAX}
             step="0.05"
             value={config.inputGain}
             onChange={(event) => setConfig((prev) => ({ ...prev, inputGain: Number(event.target.value) }))}
@@ -161,6 +166,11 @@ export function App() {
       </main>
     </div>
   );
+}
+
+function formatGainDb(gain: number): string {
+  const db = 20 * Math.log10(gain);
+  return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`;
 }
 
 function MeterStrip({ features, status }: { features: ReturnType<typeof useAudioFeatures>['latest']; status: AudioStatus }) {

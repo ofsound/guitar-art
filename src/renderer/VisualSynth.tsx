@@ -52,11 +52,7 @@ export function VisualSynth({
     trailPlane.position.set(0, 0, -2.6);
     scene.add(trailPlane);
 
-    const geometrySet = [
-      new THREE.IcosahedronGeometry(1.2, 4),
-      new THREE.TorusKnotGeometry(0.82, 0.22, 180, 18),
-      new THREE.OctahedronGeometry(1.35, 3)
-    ];
+    const geometrySet = createChromaticGeometries();
     const harmonicMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color().setHSL(0.58, 0.82, 0.58),
       metalness: 0.22,
@@ -133,14 +129,14 @@ export function VisualSynth({
       harmonicMaterial.roughness = 0.68 - features.spectralCentroid * 0.42;
 
       if (features.pitchConfidence > 0.42) {
-        const nextMode = Math.floor((hue * 12) % geometrySet.length);
+        const nextMode = getPitchClassIndex(features.pitchHz);
         if (nextMode !== lastGeometryMode && features.noteStability > 0.45) {
           harmonicMesh.geometry = geometrySet[nextMode];
           lastGeometryMode = nextMode;
         }
       }
 
-      harmonicMesh.visible = activeLayers.draw3d;
+      harmonicMesh.visible = activeLayers.draw3d && features.gate;
       particlePoints.visible = activeLayers.draw3d;
       trailPlane.visible = activeLayers.draw2d;
 
@@ -205,6 +201,32 @@ export function VisualSynth({
 
 function createRenderer(): THREE.WebGLRenderer {
   return new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+}
+
+function createChromaticGeometries(): THREE.BufferGeometry[] {
+  return [
+    new THREE.IcosahedronGeometry(1.2, 4), // C
+    new THREE.BoxGeometry(1.65, 1.65, 1.65, 3, 3, 3), // C#
+    new THREE.TorusGeometry(0.9, 0.23, 24, 96), // D
+    new THREE.ConeGeometry(1.05, 1.95, 6, 2), // D#
+    new THREE.TorusKnotGeometry(0.82, 0.22, 180, 18), // E
+    new THREE.OctahedronGeometry(1.35, 3), // F
+    new THREE.CapsuleGeometry(0.62, 1.25, 12, 32), // F#
+    new THREE.TetrahedronGeometry(1.5, 2), // G
+    new THREE.DodecahedronGeometry(1.25, 2), // G#
+    new THREE.CylinderGeometry(0.85, 0.85, 1.75, 7, 2), // A
+    new THREE.SphereGeometry(1.15, 24, 12, 0, Math.PI * 2, 0.22, Math.PI - 0.44), // A#
+    new THREE.TorusKnotGeometry(0.78, 0.18, 160, 14, 3, 5) // B
+  ];
+}
+
+function getPitchClassIndex(pitchHz: number | null): number {
+  if (!pitchHz || pitchHz <= 0) {
+    return 0;
+  }
+
+  const midi = Math.round(69 + 12 * Math.log2(pitchHz / 440));
+  return ((midi % 12) + 12) % 12;
 }
 
 function drawTrails(

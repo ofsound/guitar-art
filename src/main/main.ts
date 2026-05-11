@@ -32,7 +32,7 @@ async function createWindow() {
     title: 'Guitar Art',
     backgroundColor: '#090b0d',
     webPreferences: {
-      preload: path.join(__dirname, '../preload/preload.js'),
+      preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false
