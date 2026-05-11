@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { AudioDevice, AudioMode, AudioStartConfig, AudioStatus, LayerState } from '../shared/audio';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { AudioDevice, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus, LayerState } from '../shared/audio';
 import { DEFAULT_START_CONFIG } from '../shared/audio';
 import { getAudioClient } from './audioClient';
 import { useAudioFeatures } from './useAudioFeatures';
@@ -20,6 +20,26 @@ export function App() {
   });
   const { latest, latestRef } = useAudioFeatures();
   const audio = getAudioClient();
+  const pendingParamsRef = useRef<AudioParamsUpdate>({});
+  const paramsFrameRef = useRef<number | null>(null);
+
+  const pushLiveParams = useCallback(
+    (params: AudioParamsUpdate) => {
+      pendingParamsRef.current = { ...pendingParamsRef.current, ...params };
+
+      if (paramsFrameRef.current !== null) {
+        return;
+      }
+
+      paramsFrameRef.current = window.requestAnimationFrame(() => {
+        const next = pendingParamsRef.current;
+        pendingParamsRef.current = {};
+        paramsFrameRef.current = null;
+        void audio.setParams(next).catch(() => undefined);
+      });
+    },
+    [audio]
+  );
 
   useEffect(() => {
     audio.listDevices().then(setDevices).catch(() => setDevices([]));
@@ -29,6 +49,14 @@ export function App() {
       off();
     };
   }, [audio]);
+
+  useEffect(() => {
+    return () => {
+      if (paramsFrameRef.current !== null) {
+        window.cancelAnimationFrame(paramsFrameRef.current);
+      }
+    };
+  }, []);
 
   const selectedDevice = useMemo(
     () => devices.find((device) => device.id === config.deviceId),
@@ -57,11 +85,11 @@ export function App() {
         <section className="control-group">
           <label>Input source</label>
           <div className="segmented">
-            <button className={config.mode === 'simulator' ? 'active' : ''} onClick={() => start('simulator')}>
-              Simulator
-            </button>
             <button className={config.mode === 'live' ? 'active' : ''} onClick={() => start('live')}>
               Live
+            </button>
+            <button className={config.mode === 'simulator' ? 'active' : ''} onClick={() => start('simulator')}>
+              Simulator
             </button>
           </div>
         </section>
@@ -119,7 +147,11 @@ export function App() {
             max={INPUT_GAIN_MAX}
             step="0.05"
             value={config.inputGain}
-            onChange={(event) => setConfig((prev) => ({ ...prev, inputGain: Number(event.target.value) }))}
+            onChange={(event) => {
+              const inputGain = Number(event.target.value);
+              setConfig((prev) => ({ ...prev, inputGain }));
+              pushLiveParams({ inputGain });
+            }}
           />
           <label>Gate {config.gateThreshold.toFixed(3)}</label>
           <input
@@ -128,7 +160,11 @@ export function App() {
             max="0.12"
             step="0.005"
             value={config.gateThreshold}
-            onChange={(event) => setConfig((prev) => ({ ...prev, gateThreshold: Number(event.target.value) }))}
+            onChange={(event) => {
+              const gateThreshold = Number(event.target.value);
+              setConfig((prev) => ({ ...prev, gateThreshold }));
+              pushLiveParams({ gateThreshold });
+            }}
           />
         </section>
 

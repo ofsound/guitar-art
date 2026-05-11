@@ -1,4 +1,4 @@
-import type { AudioDevice, AudioFeatures, AudioMode, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
 
 declare global {
   interface Window {
@@ -8,6 +8,7 @@ declare global {
         start: (config: AudioStartConfig) => Promise<void>;
         stop: () => Promise<void>;
         setMode: (mode: AudioMode) => Promise<void>;
+        setParams: (params: AudioParamsUpdate) => Promise<void>;
         getLatestFeatures: () => Promise<AudioFeatures>;
         onStatus: (listener: (status: AudioStatus) => void) => () => void;
       };

@@ -21,6 +21,11 @@ export type AudioStartConfig = {
   gateThreshold: number;
 };
 
+export type AudioParamsUpdate = {
+  inputGain?: number;
+  gateThreshold?: number;
+};
+
 export type AudioFeatures = {
   t: number;
   rms: number;
@@ -68,7 +73,7 @@ export const DEFAULT_FEATURES: AudioFeatures = {
 };
 
 export const DEFAULT_START_CONFIG: AudioStartConfig = {
-  mode: 'simulator',
+  mode: 'live',
   channelIndex: 0,
   sampleRate: 48000,
   bufferSize: 256,

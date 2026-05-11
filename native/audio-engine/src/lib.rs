@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::f32::consts::PI;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
@@ -39,6 +39,13 @@ pub struct AudioStartConfig {
     pub feature_rate_hz: u32,
     pub input_gain: f64,
     pub gate_threshold: f64,
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct AudioParamsUpdate {
+    pub input_gain: Option<f64>,
+    pub gate_threshold: Option<f64>,
 }
 
 #[napi(object)]
@@ -87,9 +94,44 @@ struct RunningEngine {
     dsp_thread: Option<JoinHandle<()>>,
 }
 
+struct LiveAudioParams {
+    input_gain_bits: AtomicU32,
+    gate_threshold_bits: AtomicU32,
+}
+
+impl LiveAudioParams {
+    fn new(input_gain: f32, gate_threshold: f32) -> Self {
+        Self {
+            input_gain_bits: AtomicU32::new(input_gain.to_bits()),
+            gate_threshold_bits: AtomicU32::new(gate_threshold.to_bits()),
+        }
+    }
+
+    fn set(&self, update: &AudioParamsUpdate) {
+        if let Some(input_gain) = valid_param(update.input_gain) {
+            self.input_gain_bits
+                .store(input_gain.to_bits(), Ordering::Relaxed);
+        }
+
+        if let Some(gate_threshold) = valid_param(update.gate_threshold) {
+            self.gate_threshold_bits
+                .store(gate_threshold.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    fn input_gain(&self) -> f32 {
+        f32::from_bits(self.input_gain_bits.load(Ordering::Relaxed))
+    }
+
+    fn gate_threshold(&self) -> f32 {
+        f32::from_bits(self.gate_threshold_bits.load(Ordering::Relaxed))
+    }
+}
+
 #[napi]
 pub struct AudioEngine {
     latest: Arc<Mutex<AudioFeatures>>,
+    params: Arc<LiveAudioParams>,
     running: Option<RunningEngine>,
     mode: String,
 }
@@ -100,6 +142,7 @@ impl AudioEngine {
     pub fn new() -> Self {
         Self {
             latest: Arc::new(Mutex::new(AudioFeatures::default())),
+            params: Arc::new(LiveAudioParams::new(1.0, 0.025)),
             running: None,
             mode: "simulator".to_string(),
         }
@@ -114,6 +157,10 @@ impl AudioEngine {
     pub fn start(&mut self, config: AudioStartConfig) -> Result<()> {
         self.stop();
         self.mode = config.mode.clone();
+        self.params.set(&AudioParamsUpdate {
+            input_gain: Some(config.input_gain),
+            gate_threshold: Some(config.gate_threshold),
+        });
 
         if config.mode != "live" {
             return Ok(());
@@ -136,14 +183,15 @@ impl AudioEngine {
         let (producer, consumer) = RingBuffer::<f32>::new(SAMPLE_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
         let latest = self.latest.clone();
+        let params = self.params.clone();
         let dsp_stop = stop.clone();
         let dsp_config = config.clone();
+        let dsp_params = params.clone();
         let dsp_thread = thread::spawn(move || {
-            run_dsp(consumer, latest, dsp_stop, dsp_config);
+            run_dsp(consumer, latest, dsp_stop, dsp_config, dsp_params);
         });
 
         let channel_index = config.channel_index.min(channels.saturating_sub(1) as u32) as usize;
-        let input_gain = config.input_gain as f32;
         let err_fn = |error| eprintln!("CPAL stream error: {error}");
         let stream = match sample_format {
             cpal::SampleFormat::F32 => build_input_stream::<f32>(
@@ -151,7 +199,7 @@ impl AudioEngine {
                 &stream_config,
                 channels as usize,
                 channel_index,
-                input_gain,
+                params.clone(),
                 producer,
                 err_fn,
             ),
@@ -160,7 +208,7 @@ impl AudioEngine {
                 &stream_config,
                 channels as usize,
                 channel_index,
-                input_gain,
+                params.clone(),
                 producer,
                 err_fn,
             ),
@@ -169,7 +217,7 @@ impl AudioEngine {
                 &stream_config,
                 channels as usize,
                 channel_index,
-                input_gain,
+                params.clone(),
                 producer,
                 err_fn,
             ),
@@ -177,9 +225,9 @@ impl AudioEngine {
         }
         .map_err(|error| Error::from_reason(format!("Unable to build input stream: {error}")))?;
 
-        stream
-            .play()
-            .map_err(|error| Error::from_reason(format!("Unable to start input stream: {error}")))?;
+        stream.play().map_err(|error| {
+            Error::from_reason(format!("Unable to start input stream: {error}"))
+        })?;
 
         self.running = Some(RunningEngine {
             stop,
@@ -205,6 +253,11 @@ impl AudioEngine {
         self.mode = mode;
     }
 
+    #[napi(js_name = "setParams")]
+    pub fn set_params(&mut self, params: AudioParamsUpdate) {
+        self.params.set(&params);
+    }
+
     #[napi(js_name = "getLatestFeatures")]
     pub fn get_latest_features(&self) -> AudioFeatures {
         self.latest.lock().unwrap().clone()
@@ -219,14 +272,19 @@ impl Drop for AudioEngine {
 
 fn list_devices() -> std::result::Result<Vec<AudioDevice>, Box<dyn std::error::Error>> {
     let host = cpal::default_host();
-    let default_name = host.default_input_device().and_then(|device| device.name().ok());
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
     let mut devices = Vec::new();
 
     for (index, device) in host.input_devices()?.enumerate() {
         let name = device.name().unwrap_or_else(|_| format!("Input {index}"));
         let default_config = device.default_input_config().ok();
         let mut supported_sample_rates = Vec::new();
-        let mut input_channels = default_config.as_ref().map(|config| config.channels()).unwrap_or(1) as u32;
+        let mut input_channels = default_config
+            .as_ref()
+            .map(|config| config.channels())
+            .unwrap_or(1) as u32;
         let mut default_sample_rate = default_config
             .as_ref()
             .map(|config| config.sample_rate().0)
@@ -259,7 +317,10 @@ fn list_devices() -> std::result::Result<Vec<AudioDevice>, Box<dyn std::error::E
     Ok(devices)
 }
 
-fn select_device(host: &cpal::Host, id: Option<&str>) -> std::result::Result<cpal::Device, Box<dyn std::error::Error>> {
+fn select_device(
+    host: &cpal::Host,
+    id: Option<&str>,
+) -> std::result::Result<cpal::Device, Box<dyn std::error::Error>> {
     if let Some(id) = id {
         if let Ok(index) = id.parse::<usize>() {
             if let Some(device) = host.input_devices()?.nth(index) {
@@ -272,12 +333,18 @@ fn select_device(host: &cpal::Host, id: Option<&str>) -> std::result::Result<cpa
         .ok_or_else(|| "No default input device available".into())
 }
 
+fn valid_param(value: Option<f64>) -> Option<f32> {
+    value
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| value as f32)
+}
+
 fn build_input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
     channel_index: usize,
-    input_gain: f32,
+    params: Arc<LiveAudioParams>,
     mut producer: Producer<f32>,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> std::result::Result<cpal::Stream, cpal::BuildStreamError>
@@ -288,6 +355,7 @@ where
     device.build_input_stream(
         config,
         move |data: &[T], _| {
+            let input_gain = params.input_gain();
             for frame in data.chunks(channels) {
                 if let Some(sample) = frame.get(channel_index) {
                     let value = sample.to_sample::<f32>() * input_gain;
@@ -305,6 +373,7 @@ fn run_dsp(
     latest: Arc<Mutex<AudioFeatures>>,
     stop: Arc<AtomicBool>,
     config: AudioStartConfig,
+    params: Arc<LiveAudioParams>,
 ) {
     let sample_rate = config.sample_rate as f32;
     let feature_interval = Duration::from_secs_f64(1.0 / config.feature_rate_hz.max(1) as f64);
@@ -331,7 +400,7 @@ fn run_dsp(
             let mut features = analyze_window(
                 samples,
                 sample_rate,
-                config.gate_threshold as f32,
+                params.gate_threshold(),
                 last_rms,
                 stable_pitch,
                 note_stability,
@@ -365,9 +434,14 @@ fn analyze_window(
     let clipping = peak > 0.98;
     let gate = rms > gate_threshold;
     let onset = ((rms - previous_rms).max(0.0) * 8.0).clamp(0.0, 1.0);
-    let (low, mid, high, spectral_centroid) = spectral_features(samples, sample_rate, fft, fft_buffer);
+    let (low, mid, high, spectral_centroid) =
+        spectral_features(samples, sample_rate, fft, fft_buffer);
     let (pitch_hz, confidence) = detect_pitch_mpm(samples, sample_rate);
-    let pitch_hz = if gate && confidence > 0.22 { pitch_hz } else { None };
+    let pitch_hz = if gate && confidence > 0.22 {
+        pitch_hz
+    } else {
+        None
+    };
     let note_name = pitch_hz.map(note_name);
     let note_stability = match (previous_pitch, pitch_hz) {
         (Some(prev), Some(next)) => {
@@ -402,7 +476,10 @@ fn rms(samples: &[f32]) -> f32 {
 }
 
 fn peak(samples: &[f32]) -> f32 {
-    samples.iter().fold(0.0_f32, |acc, sample| acc.max(sample.abs())).clamp(0.0, 1.5)
+    samples
+        .iter()
+        .fold(0.0_f32, |acc, sample| acc.max(sample.abs()))
+        .clamp(0.0, 1.5)
 }
 
 fn spectral_features(
@@ -440,7 +517,11 @@ fn spectral_features(
     }
 
     let scale = (low + mid + high).max(0.0001);
-    let centroid_hz = if total > 0.0001 { weighted / total } else { 0.0 };
+    let centroid_hz = if total > 0.0001 {
+        weighted / total
+    } else {
+        0.0
+    };
     (
         (low / scale).clamp(0.0, 1.0),
         (mid / scale).clamp(0.0, 1.0),
@@ -462,9 +543,14 @@ fn detect_pitch_mpm(samples: &[f32], sample_rate: f32) -> (Option<f32>, f32) {
         let mut divisor = 0.0;
         for index in 0..(samples.len() - tau) {
             acf += samples[index] * samples[index + tau];
-            divisor += samples[index] * samples[index] + samples[index + tau] * samples[index + tau];
+            divisor +=
+                samples[index] * samples[index] + samples[index + tau] * samples[index + tau];
         }
-        let nsdf = if divisor > 0.0 { 2.0 * acf / divisor } else { 0.0 };
+        let nsdf = if divisor > 0.0 {
+            2.0 * acf / divisor
+        } else {
+            0.0
+        };
         if nsdf > best {
             best = nsdf;
             best_tau = tau;
@@ -481,7 +567,9 @@ fn detect_pitch_mpm(samples: &[f32], sample_rate: f32) -> (Option<f32>, f32) {
 
 fn note_name(freq: f32) -> String {
     let midi = (69.0 + 12.0 * (freq / 440.0).log2()).round() as i32;
-    let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    let names = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
     let name = names[midi.rem_euclid(12) as usize];
     let octave = midi.div_euclid(12) - 1;
     format!("{name}{octave}")
@@ -501,7 +589,16 @@ mod tests {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_SIZE);
         let mut fft_buffer = vec![Complex::new(0.0, 0.0); FFT_SIZE];
-        analyze_window(samples, 48_000.0, 0.02, previous_rms, None, 0.0, &fft, &mut fft_buffer)
+        analyze_window(
+            samples,
+            48_000.0,
+            0.02,
+            previous_rms,
+            None,
+            0.0,
+            &fft,
+            &mut fft_buffer,
+        )
     }
 
     #[test]

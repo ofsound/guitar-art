@@ -1,10 +1,11 @@
 import { app, BrowserWindow, ipcMain, systemPreferences } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
-import type { AudioMode, AudioStartConfig } from '../shared/audio';
+import type { AudioMode, AudioParamsUpdate, AudioStartConfig } from '../shared/audio';
 import {
   AUDIO_GET_LATEST_FEATURES,
   AUDIO_LIST_DEVICES,
+  AUDIO_SET_PARAMS,
   AUDIO_SET_MODE,
   AUDIO_START,
   AUDIO_STATUS,
@@ -92,6 +93,10 @@ function registerAudioIpc() {
   ipcMain.handle(AUDIO_SET_MODE, (_event, mode: AudioMode) => {
     audioHost.setMode(mode);
     mainWindow?.webContents.send(AUDIO_STATUS, audioHost.getStatus());
+  });
+
+  ipcMain.handle(AUDIO_SET_PARAMS, (_event, params: AudioParamsUpdate) => {
+    audioHost.setParams(params);
   });
 
   ipcMain.handle(AUDIO_GET_LATEST_FEATURES, () => audioHost.getLatestFeatures());

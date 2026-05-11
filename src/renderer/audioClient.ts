@@ -1,4 +1,4 @@
-import type { AudioDevice, AudioFeatures, AudioMode, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
 import { DEFAULT_FEATURES } from '../shared/audio';
 
 type AudioClient = Window['guitarArt']['audio'];
@@ -37,6 +37,7 @@ const fallbackAudioClient: AudioClient = {
     fallbackMode = mode === 'live' ? 'simulator' : mode;
     emitFallbackStatus('Electron preload unavailable; simulator mode selected.');
   },
+  setParams: async (_params: AudioParamsUpdate): Promise<void> => undefined,
   getLatestFeatures: async (): Promise<AudioFeatures> => {
     if (!fallbackRunning) {
       return DEFAULT_FEATURES;

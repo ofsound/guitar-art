@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import type { AudioDevice, AudioFeatures, AudioMode, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
 import { DEFAULT_FEATURES } from '../shared/audio';
 
 type NativeAudioEngine = {
@@ -8,6 +8,7 @@ type NativeAudioEngine = {
   start: (config: AudioStartConfig) => void;
   stop: () => void;
   setMode: (mode: AudioMode) => void;
+  setParams?: (params: AudioParamsUpdate) => void;
   getLatestFeatures: () => AudioFeatures;
 };
 
@@ -108,6 +109,10 @@ export class AudioEngineHost {
       mode,
       message: mode === 'live' ? 'Live mode selected.' : 'Simulator mode selected.'
     };
+  }
+
+  setParams(params: AudioParamsUpdate): void {
+    this.native?.setParams?.(params);
   }
 
   getLatestFeatures(): AudioFeatures {

@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AudioDevice, AudioFeatures, AudioMode, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
 import {
   AUDIO_GET_LATEST_FEATURES,
   AUDIO_LIST_DEVICES,
+  AUDIO_SET_PARAMS,
   AUDIO_SET_MODE,
   AUDIO_START,
   AUDIO_STATUS,
@@ -15,6 +16,7 @@ const api = {
     start: (config: AudioStartConfig): Promise<void> => ipcRenderer.invoke(AUDIO_START, config),
     stop: (): Promise<void> => ipcRenderer.invoke(AUDIO_STOP),
     setMode: (mode: AudioMode): Promise<void> => ipcRenderer.invoke(AUDIO_SET_MODE, mode),
+    setParams: (params: AudioParamsUpdate): Promise<void> => ipcRenderer.invoke(AUDIO_SET_PARAMS, params),
     getLatestFeatures: (): Promise<AudioFeatures> => ipcRenderer.invoke(AUDIO_GET_LATEST_FEATURES),
     onStatus: (listener: (status: AudioStatus) => void) => {
       const wrapped = (_event: Electron.IpcRendererEvent, status: AudioStatus) => listener(status);
