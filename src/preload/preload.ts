@@ -19,7 +19,9 @@ const api = {
     onStatus: (listener: (status: AudioStatus) => void) => {
       const wrapped = (_event: Electron.IpcRendererEvent, status: AudioStatus) => listener(status);
       ipcRenderer.on(AUDIO_STATUS, wrapped);
-      return () => ipcRenderer.off(AUDIO_STATUS, wrapped);
+      return () => {
+        ipcRenderer.off(AUDIO_STATUS, wrapped);
+      };
     }
   }
 };
