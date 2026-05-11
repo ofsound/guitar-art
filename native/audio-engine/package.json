@@ -1,0 +1,19 @@
+{
+  "name": "@guitar-art/audio-engine",
+  "version": "0.1.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "private": true,
+  "scripts": {
+    "build": "PATH=$HOME/.cargo/bin:$PATH napi build --platform --release",
+    "build:debug": "PATH=$HOME/.cargo/bin:$PATH napi build --platform",
+    "test": "cargo test"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  },
+  "napi": {
+    "binaryName": "audio_engine",
+    "targets": ["aarch64-apple-darwin"]
+  }
+}
