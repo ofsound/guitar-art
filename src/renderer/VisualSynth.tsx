@@ -96,7 +96,26 @@ type ChromaLayerContext = BaseLayerContext & {
   particleColors: Float32Array;
 };
 
-type LayerContext = TwoDLayerContext | FormsLayerContext | SpectralLayerContext | ChromaLayerContext;
+type GuitarGlyphLayerContext = BaseLayerContext & {
+  type: 'guitarGlyph3d';
+  group: THREE.Group;
+  stringLines: THREE.LineSegments;
+  stringGeometry: THREE.BufferGeometry;
+  stringMaterial: THREE.LineBasicMaterial;
+  fretBars: THREE.Mesh[];
+  noteNodes: THREE.Mesh[];
+  noteMaterials: THREE.MeshStandardMaterial[];
+  spectrum: THREE.InstancedMesh;
+  spectrumMaterial: THREE.MeshStandardMaterial;
+  eventParticles: Particle[];
+  particleGeometry: THREE.BufferGeometry;
+  particleMaterial: THREE.PointsMaterial;
+  particlePositions: Float32Array;
+  particleColors: Float32Array;
+  seenEventIds: Set<number>;
+};
+
+type LayerContext = TwoDLayerContext | FormsLayerContext | SpectralLayerContext | ChromaLayerContext | GuitarGlyphLayerContext;
 
 type RecordingState = {
   canvas: HTMLCanvasElement;
@@ -252,8 +271,10 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
           renderFormsLayer(context, layer, frame, features, dt, index);
         } else if (context.type === 'spectralField3d') {
           renderSpectralFieldLayer(context, layer, frame, now, index);
-        } else {
+        } else if (context.type === 'chromaConstellation3d') {
           renderChromaConstellationLayer(context, layer, frame, features, dt, now, index);
+        } else {
+          renderGuitarGlyphLayer(context, layer, frame, features, dt, now, index);
         }
       });
 
@@ -338,6 +359,9 @@ function createLayerContext(scene: THREE.Scene, layer: VisualLayer, width: numbe
   }
   if (layer.mode === 'chromaConstellation3d') {
     return createChromaLayerContext(scene, layer);
+  }
+  if (layer.mode === 'guitarGlyph3d') {
+    return createGuitarGlyphLayerContext(scene, layer);
   }
   return createSpectralFieldLayerContext(scene, layer);
 }
@@ -563,6 +587,132 @@ function createChromaLayerContext(scene: THREE.Scene, layer: VisualLayer): Chrom
       nodeMaterials.forEach((material) => material.dispose());
       lineGeometry.dispose();
       lineMaterial.dispose();
+      particleGeometry.dispose();
+      particleMaterial.dispose();
+    }
+  };
+}
+
+function createGuitarGlyphLayerContext(scene: THREE.Scene, layer: VisualLayer): GuitarGlyphLayerContext {
+  const group = new THREE.Group();
+  scene.add(group);
+
+  const stringPositions = new Float32Array(6 * 2 * 3);
+  for (let index = 0; index < 6; index += 1) {
+    const y = 1.1 - index * 0.44;
+    const offset = index * 6;
+    stringPositions[offset] = -2.65;
+    stringPositions[offset + 1] = y;
+    stringPositions[offset + 2] = 0;
+    stringPositions[offset + 3] = 2.65;
+    stringPositions[offset + 4] = y;
+    stringPositions[offset + 5] = 0;
+  }
+  const stringGeometry = new THREE.BufferGeometry();
+  stringGeometry.setAttribute('position', new THREE.BufferAttribute(stringPositions, 3));
+  const stringMaterial = new THREE.LineBasicMaterial({
+    color: 0xd7e6df,
+    transparent: true,
+    opacity: layer.controls.opacity * 0.58
+  });
+  const stringLines = new THREE.LineSegments(stringGeometry, stringMaterial);
+  group.add(stringLines);
+
+  const fretBars: THREE.Mesh[] = [];
+  const fretGeometry = new THREE.BoxGeometry(0.018, 2.55, 0.035);
+  const fretMaterial = new THREE.MeshStandardMaterial({
+    color: 0x9fb8b1,
+    roughness: 0.5,
+    metalness: 0.25,
+    transparent: true,
+    opacity: layer.controls.opacity * 0.5
+  });
+  for (let fret = 0; fret <= 12; fret += 1) {
+    const bar = new THREE.Mesh(fretGeometry, fretMaterial.clone());
+    bar.position.set(-2.35 + fret * 0.39, 0, -0.02);
+    bar.scale.x = fret === 0 || fret === 12 ? 1.8 : 1;
+    fretBars.push(bar);
+    group.add(bar);
+  }
+
+  const noteNodes: THREE.Mesh[] = [];
+  const noteMaterials: THREE.MeshStandardMaterial[] = [];
+  const noteGeometry = new THREE.SphereGeometry(0.105, 18, 12);
+  for (let index = 0; index < 6; index += 1) {
+    const material = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(0.08 + index * 0.09, 0.74, 0.52),
+      emissive: new THREE.Color().setHSL(0.08 + index * 0.09, 0.7, 0.08),
+      emissiveIntensity: 0.6,
+      roughness: 0.36,
+      metalness: 0.12,
+      transparent: true,
+      opacity: 0
+    });
+    const node = new THREE.Mesh(noteGeometry, material);
+    noteNodes.push(node);
+    noteMaterials.push(material);
+    group.add(node);
+  }
+
+  const spectrumGeometry = new THREE.BoxGeometry(0.075, 1, 0.075);
+  const spectrumMaterial = new THREE.MeshStandardMaterial({
+    color: 0x75d0ff,
+    emissive: 0x0a2530,
+    emissiveIntensity: 0.5,
+    transparent: true,
+    opacity: layer.controls.opacity * 0.72
+  });
+  const spectrum = new THREE.InstancedMesh(spectrumGeometry, spectrumMaterial, 36);
+  group.add(spectrum);
+
+  const particleGeometry = new THREE.BufferGeometry();
+  const particlePositions = new Float32Array(260 * 3);
+  const particleColors = new Float32Array(260 * 3);
+  particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+  particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+  const particleMaterial = new THREE.PointsMaterial({
+    size: 0.045,
+    vertexColors: true,
+    transparent: true,
+    opacity: layer.controls.opacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const particlePoints = new THREE.Points(particleGeometry, particleMaterial);
+  group.add(particlePoints);
+
+  return {
+    id: layer.id,
+    mode: layer.mode,
+    type: 'guitarGlyph3d',
+    group,
+    stringLines,
+    stringGeometry,
+    stringMaterial,
+    fretBars,
+    noteNodes,
+    noteMaterials,
+    spectrum,
+    spectrumMaterial,
+    eventParticles: [],
+    particleGeometry,
+    particleMaterial,
+    particlePositions,
+    particleColors,
+    seenEventIds: new Set(),
+    smoothed: createEmptyFrame(),
+    dispose: () => {
+      scene.remove(group);
+      stringGeometry.dispose();
+      stringMaterial.dispose();
+      fretGeometry.dispose();
+      fretMaterial.dispose();
+      fretBars.forEach((bar) => (bar.material as THREE.Material).dispose());
+      noteGeometry.dispose();
+      noteMaterials.forEach((material) => material.dispose());
+      spectrumGeometry.dispose();
+      spectrumMaterial.dispose();
+      spectrum.dispose();
       particleGeometry.dispose();
       particleMaterial.dispose();
     }
@@ -866,6 +1016,98 @@ function renderChromaConstellationLayer(
   context.particleGeometry.attributes.color.needsUpdate = true;
 }
 
+function renderGuitarGlyphLayer(
+  context: GuitarGlyphLayerContext,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  dt: number,
+  now: number,
+  index: number
+) {
+  context.group.visible = layer.enabled && layer.controls.opacity > 0;
+  context.stringMaterial.opacity = layer.controls.opacity * (0.38 + (features.harmonicRatio ?? 0) * 0.32);
+  context.spectrumMaterial.opacity = layer.controls.opacity * 0.72;
+  context.particleMaterial.opacity = layer.controls.opacity;
+  if (!context.group.visible) {
+    return;
+  }
+
+  const technique = features.guitarTechnique ?? 'idle';
+  const voicing = Array.isArray(features.voicing) ? features.voicing : [];
+  const logSpectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
+  const eventBoost = Array.isArray(features.guitarEvents) ? features.guitarEvents.reduce((max, event) => Math.max(max, event.strength), 0) : 0;
+  context.group.position.set((index - 1) * 0.42, -0.15, -0.4 - index * 0.06);
+  context.group.rotation.x = -0.22 + Math.sin(now * 0.00022 + index) * 0.08 * layer.controls.motionAmount;
+  context.group.rotation.y = Math.sin(now * 0.00018 + features.bendCents * 0.002) * 0.18 * layer.controls.motionAmount;
+  context.group.scale.setScalar(0.92 + frame.rms * 0.18 + (features.guitarTechniqueConfidence ?? 0) * 0.08);
+
+  context.fretBars.forEach((bar, fret) => {
+    const material = bar.material as THREE.MeshStandardMaterial;
+    material.opacity = layer.controls.opacity * (fret === 0 || fret === 12 ? 0.72 : 0.42);
+    material.emissive.setHSL(frame.hue, 0.55, fret === features.fretNumber ? 0.16 + frame.attack * 0.22 : 0.02);
+  });
+
+  context.noteNodes.forEach((node, slot) => {
+    const candidate = voicing[slot];
+    const material = context.noteMaterials[slot];
+    if (!candidate) {
+      material.opacity += (0 - material.opacity) * 0.18;
+      node.scale.setScalar(0.01);
+      return;
+    }
+    const x = fretToX(candidate.fretNumber);
+    const y = stringToY(candidate.stringNumber);
+    const confidence = clamp01(candidate.confidence);
+    const active = features.stringNumber === candidate.stringNumber || confidence > 0.5;
+    node.position.set(x, y, 0.08 + confidence * 0.2 + (active ? frame.onset * 0.24 : 0));
+    node.scale.setScalar(0.75 + confidence * 1.45 + (active ? frame.attack * 0.9 : 0));
+    const hue = wrap01((candidate.pitchClass ?? 0) / 12 + frame.hue * 0.08);
+    material.opacity = layer.controls.opacity * (0.48 + confidence * 0.52);
+    material.color.setHSL(hue, 0.72 + frame.brightness * 0.18, 0.36 + confidence * 0.28);
+    material.emissive.setHSL(hue, 0.76, 0.08 + confidence * 0.28 + eventBoost * 0.22);
+    material.emissiveIntensity = 0.6 + confidence * 1.6 + frame.attack * 1.2;
+  });
+
+  const matrix = new THREE.Matrix4();
+  const color = new THREE.Color();
+  for (let bin = 0; bin < 36; bin += 1) {
+    const value = clamp01(logSpectrum[bin] ?? 0);
+    const x = -2.55 + bin * (5.1 / 35);
+    const y = -1.72 - value * 0.42;
+    const scaleY = 0.04 + value * 0.82 * layer.controls.scaleAmount;
+    matrix.compose(
+      new THREE.Vector3(x, y, -0.05),
+      new THREE.Quaternion(),
+      new THREE.Vector3(1, scaleY, 1)
+    );
+    context.spectrum.setMatrixAt(bin, matrix);
+    color.setHSL(wrap01(frame.hue + bin / 72), 0.72, 0.22 + value * 0.48);
+    context.spectrum.setColorAt(bin, color);
+  }
+  context.spectrum.instanceMatrix.needsUpdate = true;
+  if (context.spectrum.instanceColor) {
+    context.spectrum.instanceColor.needsUpdate = true;
+  }
+
+  if (Array.isArray(features.guitarEvents)) {
+    features.guitarEvents.forEach((event) => {
+      if (context.seenEventIds.has(event.id)) {
+        return;
+      }
+      context.seenEventIds.add(event.id);
+      if (context.seenEventIds.size > 128) {
+        context.seenEventIds = new Set(Array.from(context.seenEventIds).slice(-96));
+      }
+      spawnGlyphEventParticles(context, event.stringNumber ?? features.stringNumber, event.fretNumber ?? features.fretNumber, event.strength, frame, technique);
+    });
+  }
+
+  updateParticles(context.eventParticles, context.particlePositions, context.particleColors, dt, frame);
+  context.particleGeometry.attributes.position.needsUpdate = true;
+  context.particleGeometry.attributes.color.needsUpdate = true;
+}
+
 function updateChordLines(context: ChromaLayerContext, chordClasses: number[], confidence: number, color: THREE.Color) {
   let segment = 0;
   const classes = chordClasses.length >= 2 ? chordClasses : [];
@@ -925,6 +1167,51 @@ function spawnChromaParticles(context: ChromaLayerContext, chroma: number[], fra
   });
 }
 
+function spawnGlyphEventParticles(
+  context: GuitarGlyphLayerContext,
+  stringNumber: number | null | undefined,
+  fretNumber: number | null | undefined,
+  strength: number,
+  frame: LayerFrame,
+  technique: AudioFeatures['guitarTechnique']
+) {
+  const maxParticles = context.particlePositions.length / 3;
+  const source = new THREE.Vector3(
+    fretToX(fretNumber ?? 0),
+    stringToY(stringNumber ?? 3),
+    0.2
+  );
+  const count = Math.floor(8 + clamp01(strength) * 34 + (technique === 'strum' || technique === 'scrape' ? 18 : 0));
+  for (let index = 0; index < count; index += 1) {
+    if (context.eventParticles.length >= maxParticles) {
+      context.eventParticles.shift();
+    }
+    const angle = Math.random() * Math.PI * 2;
+    const lateral = technique === 'strum' || technique === 'scrape' ? 1.8 : 0.8;
+    const speed = 0.35 + clamp01(strength) * 3.2;
+    context.eventParticles.push({
+      position: source.clone(),
+      velocity: new THREE.Vector3(
+        Math.cos(angle) * speed * lateral,
+        Math.sin(angle) * speed * 0.42,
+        (Math.random() - 0.2) * speed
+      ),
+      life: 0.5 + Math.random() * 0.9,
+      hue: wrap01(frame.hue + (Math.random() - 0.5) * 0.16)
+    });
+  }
+}
+
+function stringToY(stringNumber: number): number {
+  const clamped = Math.max(1, Math.min(6, Math.round(stringNumber)));
+  return 1.1 - (6 - clamped) * 0.44;
+}
+
+function fretToX(fretNumber: number): number {
+  const clamped = Math.max(0, Math.min(12, fretNumber));
+  return -2.35 + clamped * 0.39;
+}
+
 function getChordPitchClasses(features: AudioFeatures): number[] {
   const root = pitchClassFromName(features.chordRoot);
   if (root === null || !features.chordQuality || features.chordQuality === 'unknown' || features.chordConfidence < 0.2) {
@@ -935,7 +1222,12 @@ function getChordPitchClasses(features: AudioFeatures): number[] {
     minor: [0, 3, 7],
     power: [0, 7],
     sus2: [0, 2, 7],
-    sus4: [0, 5, 7]
+    sus4: [0, 5, 7],
+    major7: [0, 4, 7, 11],
+    minor7: [0, 3, 7, 10],
+    dominant7: [0, 4, 7, 10],
+    add9: [0, 2, 4, 7],
+    dyad: [0, 5]
   };
   return (intervals[features.chordQuality] ?? []).map((interval) => (root + interval) % 12);
 }

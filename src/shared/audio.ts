@@ -26,6 +26,47 @@ export type AudioParamsUpdate = {
   gateThreshold?: number;
 };
 
+export type GuitarTechnique =
+  | 'idle'
+  | 'single_note'
+  | 'strum'
+  | 'palm_mute'
+  | 'scrape'
+  | 'noise'
+  | 'sustain'
+  | 'bend'
+  | 'vibrato';
+
+export type GuitarVoicingCandidate = {
+  stringNumber: number;
+  fretNumber: number;
+  pitchClass: number;
+  confidence: number;
+};
+
+export type GuitarEventType =
+  | 'note_on'
+  | 'note_off'
+  | 'pluck'
+  | 'strum'
+  | 'chord_change'
+  | 'bend'
+  | 'vibrato'
+  | 'mute'
+  | 'noise';
+
+export type GuitarEvent = {
+  id: number;
+  t: number;
+  type: GuitarEventType;
+  strength: number;
+  noteName?: string | null;
+  pitchHz?: number | null;
+  stringNumber?: number | null;
+  fretNumber?: number | null;
+  chordName?: string | null;
+};
+
 export type AudioFeatures = {
   t: number;
   rms: number;
@@ -58,9 +99,32 @@ export type AudioFeatures = {
   chordQuality: ChordQuality;
   chordName: string | null;
   chordConfidence: number;
+  logSpectrum: number[];
+  spectralContrast: number;
+  harmonicRatio: number;
+  pickNoise: number;
+  muteAmount: number;
+  guitarTechnique: GuitarTechnique;
+  guitarTechniqueConfidence: number;
+  stringNumber: number | null;
+  fretNumber: number | null;
+  voicing: GuitarVoicingCandidate[];
+  guitarEvents: GuitarEvent[];
 };
 
-export type ChordQuality = 'major' | 'minor' | 'power' | 'sus2' | 'sus4' | 'unknown' | null;
+export type ChordQuality =
+  | 'major'
+  | 'minor'
+  | 'power'
+  | 'sus2'
+  | 'sus4'
+  | 'major7'
+  | 'minor7'
+  | 'dominant7'
+  | 'add9'
+  | 'dyad'
+  | 'unknown'
+  | null;
 
 export type AudioStatus = {
   running: boolean;
@@ -71,7 +135,7 @@ export type AudioStatus = {
 
 export type VisualLayerKind = '2d' | '3d';
 
-export type VisualLayerMode = 'trails2d' | 'lineArt2d' | 'forms3d' | 'spectralField3d' | 'chromaConstellation3d';
+export type VisualLayerMode = 'trails2d' | 'lineArt2d' | 'forms3d' | 'spectralField3d' | 'chromaConstellation3d' | 'guitarGlyph3d';
 
 export type VisualLayerControls = {
   sensitivity: number;
@@ -141,7 +205,18 @@ export const DEFAULT_FEATURES: AudioFeatures = {
   chordRoot: null,
   chordQuality: null,
   chordName: null,
-  chordConfidence: 0
+  chordConfidence: 0,
+  logSpectrum: Array.from({ length: 36 }, () => 0),
+  spectralContrast: 0,
+  harmonicRatio: 0,
+  pickNoise: 0,
+  muteAmount: 0,
+  guitarTechnique: 'idle',
+  guitarTechniqueConfidence: 0,
+  stringNumber: null,
+  fretNumber: null,
+  voicing: [],
+  guitarEvents: []
 };
 
 export const DEFAULT_START_CONFIG: AudioStartConfig = {

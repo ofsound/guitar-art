@@ -52,6 +52,36 @@ export interface AudioFeatures {
   chordQuality?: string
   chordName?: string
   chordConfidence: number
+  logSpectrum: Array<number>
+  spectralContrast: number
+  harmonicRatio: number
+  pickNoise: number
+  muteAmount: number
+  guitarTechnique: string
+  guitarTechniqueConfidence: number
+  stringNumber?: number
+  fretNumber?: number
+  voicing: Array<GuitarVoicingCandidate>
+  guitarEvents: Array<GuitarEvent>
+}
+
+export interface GuitarVoicingCandidate {
+  stringNumber: number
+  fretNumber: number
+  pitchClass: number
+  confidence: number
+}
+
+export interface GuitarEvent {
+  id: number
+  t: number
+  type: string
+  strength: number
+  noteName?: string
+  pitchHz?: number
+  stringNumber?: number
+  fretNumber?: number
+  chordName?: string
 }
 
 export interface AudioParamsUpdate {

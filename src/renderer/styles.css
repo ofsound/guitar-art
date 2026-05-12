@@ -560,9 +560,25 @@ input[type='range'] {
   white-space: nowrap;
 }
 
+.spectrum-bars {
+  display: grid;
+  grid-template-columns: repeat(36, 1fr);
+  gap: 2px;
+  height: 32px;
+  align-items: end;
+}
+
+.spectrum-bin {
+  min-height: 4px;
+  border-radius: 3px 3px 1px 1px;
+  background: linear-gradient(180deg, #9ee8ff, #78ffbd);
+  opacity: 0.76;
+  box-shadow: 0 0 8px rgba(120, 255, 189, 0.18);
+}
+
 .diagnostic-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(48px, 1fr));
+  grid-template-columns: repeat(4, minmax(48px, 1fr));
   gap: 6px;
 }
 

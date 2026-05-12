@@ -32,7 +32,8 @@ const MODE_LABELS: Record<VisualLayerMode, string> = {
   lineArt2d: '2D Line Art',
   forms3d: '3D Forms',
   spectralField3d: '3D Spectral Field',
-  chromaConstellation3d: '3D Chroma Constellation'
+  chromaConstellation3d: '3D Chroma Constellation',
+  guitarGlyph3d: '3D Guitar Glyph'
 };
 
 const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
@@ -40,7 +41,8 @@ const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
   lineArt2d: '2d',
   forms3d: '3d',
   spectralField3d: '3d',
-  chromaConstellation3d: '3d'
+  chromaConstellation3d: '3d',
+  guitarGlyph3d: '3d'
 };
 
 type TunerReading = {
@@ -680,10 +682,17 @@ function MeterStrip({ features }: { features: ReturnType<typeof useAudioFeatures
 
 function DiagnosticsPanel({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
   const chord = features.chordName ?? '--';
+  const position = typeof features.stringNumber === 'number' && typeof features.fretNumber === 'number' ? `S${features.stringNumber} F${features.fretNumber}` : '--';
+  const voicing = Array.isArray(features.voicing) ? features.voicing : [];
+  const logSpectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
+  const technique = features.guitarTechnique ?? 'idle';
+  const voicingConfidence = voicing.length
+    ? voicing.reduce((sum, candidate) => sum + candidate.confidence, 0) / voicing.length
+    : 0;
   return (
     <section className="diagnostics-panel">
       <div className="diagnostics-header">
-        <span>Guitar data</span>
+        <span>{technique.replace('_', ' ')}</span>
         <strong>{chord}</strong>
       </div>
       <div className="chroma-bars" aria-label="Chroma energy">
@@ -694,11 +703,18 @@ function DiagnosticsPanel({ features }: { features: ReturnType<typeof useAudioFe
           </div>
         ))}
       </div>
+      <div className="spectrum-bars" aria-label="Log spectrum">
+        {logSpectrum.map((value, index) => (
+          <div className="spectrum-bin" key={index} style={{ height: `${Math.max(4, clampPercent(value))}%` }} />
+        ))}
+      </div>
       <div className="diagnostic-grid">
+        <DiagnosticStat label="Pos" valueText={position} />
+        <DiagnosticStat label="Voice" value={voicingConfidence} />
         <DiagnosticStat label="Flux" value={features.spectralFlux} />
-        <DiagnosticStat label="Flat" value={features.spectralFlatness} />
-        <DiagnosticStat label="Noise" value={features.noisiness} />
-        <DiagnosticStat label="Bright" value={features.brightness} />
+        <DiagnosticStat label="Pick" value={features.pickNoise} />
+        <DiagnosticStat label="Mute" value={features.muteAmount} />
+        <DiagnosticStat label="Harm" value={features.harmonicRatio} />
         <DiagnosticStat label="Bend" value={features.bendCents} suffix="c" signed />
         <DiagnosticStat label="Vib" value={features.vibratoDepth} />
       </div>
@@ -709,15 +725,18 @@ function DiagnosticsPanel({ features }: { features: ReturnType<typeof useAudioFe
 function DiagnosticStat({
   label,
   value,
+  valueText,
   suffix = '',
   signed = false
 }: {
   label: string;
-  value: number;
+  value?: number;
+  valueText?: string;
   suffix?: string;
   signed?: boolean;
 }) {
-  const text = signed ? `${value >= 0 ? '+' : ''}${value.toFixed(0)}${suffix}` : `${Math.round(clampPercent(value))}`;
+  const numericValue = value ?? 0;
+  const text = valueText ?? (signed ? `${numericValue >= 0 ? '+' : ''}${numericValue.toFixed(0)}${suffix}` : `${Math.round(clampPercent(numericValue))}`);
   return (
     <div className="diagnostic-stat">
       <span>{label}</span>

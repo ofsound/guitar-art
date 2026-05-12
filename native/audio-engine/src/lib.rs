@@ -16,6 +16,15 @@ use rustfft::{num_complex::Complex, FftPlanner};
 const FFT_SIZE: usize = 4096;
 const SAMPLE_QUEUE_CAPACITY: usize = 48_000;
 const CHROMA_BINS: usize = 12;
+const LOG_SPECTRUM_BINS: usize = 36;
+const GUITAR_TUNING: [(u32, i32); 6] = [
+    (6, 40), // E2
+    (5, 45), // A2
+    (4, 50), // D3
+    (3, 55), // G3
+    (2, 59), // B3
+    (1, 64), // E4
+];
 const NOTE_NAMES: [&str; CHROMA_BINS] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
@@ -54,6 +63,29 @@ pub struct AudioParamsUpdate {
 
 #[napi(object)]
 #[derive(Clone, Debug)]
+pub struct GuitarVoicingCandidate {
+    pub string_number: u32,
+    pub fret_number: u32,
+    pub pitch_class: u32,
+    pub confidence: f64,
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct GuitarEvent {
+    pub id: u32,
+    pub t: f64,
+    pub r#type: String,
+    pub strength: f64,
+    pub note_name: Option<String>,
+    pub pitch_hz: Option<f64>,
+    pub string_number: Option<u32>,
+    pub fret_number: Option<u32>,
+    pub chord_name: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
 pub struct AudioFeatures {
     pub t: f64,
     pub rms: f64,
@@ -86,6 +118,17 @@ pub struct AudioFeatures {
     pub chord_quality: Option<String>,
     pub chord_name: Option<String>,
     pub chord_confidence: f64,
+    pub log_spectrum: Vec<f64>,
+    pub spectral_contrast: f64,
+    pub harmonic_ratio: f64,
+    pub pick_noise: f64,
+    pub mute_amount: f64,
+    pub guitar_technique: String,
+    pub guitar_technique_confidence: f64,
+    pub string_number: Option<u32>,
+    pub fret_number: Option<u32>,
+    pub voicing: Vec<GuitarVoicingCandidate>,
+    pub guitar_events: Vec<GuitarEvent>,
 }
 
 impl Default for AudioFeatures {
@@ -122,6 +165,17 @@ impl Default for AudioFeatures {
             chord_quality: None,
             chord_name: None,
             chord_confidence: 0.0,
+            log_spectrum: vec![0.0; LOG_SPECTRUM_BINS],
+            spectral_contrast: 0.0,
+            harmonic_ratio: 0.0,
+            pick_noise: 0.0,
+            mute_amount: 0.0,
+            guitar_technique: "idle".to_string(),
+            guitar_technique_confidence: 0.0,
+            string_number: None,
+            fret_number: None,
+            voicing: Vec::new(),
+            guitar_events: Vec::new(),
         }
     }
 }
@@ -135,6 +189,182 @@ struct RunningEngine {
 struct LiveAudioParams {
     input_gain_bits: AtomicU32,
     gate_threshold_bits: AtomicU32,
+}
+
+struct GuitarAnalyzerState {
+    next_event_id: u32,
+    last_gate: bool,
+    last_chord_name: Option<String>,
+    last_pitch_hz: Option<f32>,
+    last_onset_t: f64,
+    events: VecDeque<GuitarEvent>,
+}
+
+impl GuitarAnalyzerState {
+    fn new() -> Self {
+        Self {
+            next_event_id: 1,
+            last_gate: false,
+            last_chord_name: None,
+            last_pitch_hz: None,
+            last_onset_t: -10.0,
+            events: VecDeque::with_capacity(48),
+        }
+    }
+
+    fn update(&mut self, features: &mut AudioFeatures, now_secs: f64) {
+        let strength = features.onset.max(features.rms).clamp(0.0, 1.0);
+        let note_name = features.note_name.clone();
+        let pitch_hz = features.pitch_hz;
+        let string_number = features.string_number;
+        let fret_number = features.fret_number;
+
+        if features.gate && !self.last_gate {
+            self.push_event(
+                now_secs,
+                "note_on",
+                strength,
+                note_name.clone(),
+                pitch_hz,
+                string_number,
+                fret_number,
+                features.chord_name.clone(),
+            );
+        } else if !features.gate && self.last_gate {
+            self.push_event(now_secs, "note_off", 0.4, None, None, None, None, None);
+        }
+
+        if features.onset > 0.34 && now_secs - self.last_onset_t > 0.055 {
+            let event_type = if features.chord_confidence > 0.42 || features.harmonic_density > 0.5 {
+                "strum"
+            } else {
+                "pluck"
+            };
+            self.push_event(
+                now_secs,
+                event_type,
+                features.onset,
+                note_name.clone(),
+                pitch_hz,
+                string_number,
+                fret_number,
+                features.chord_name.clone(),
+            );
+            self.last_onset_t = now_secs;
+        }
+
+        if features.mute_amount > 0.58 && features.gate {
+            self.push_event(
+                now_secs,
+                "mute",
+                features.mute_amount,
+                note_name.clone(),
+                pitch_hz,
+                string_number,
+                fret_number,
+                features.chord_name.clone(),
+            );
+        }
+
+        if features.pick_noise > 0.62 && features.gate {
+            self.push_event(
+                now_secs,
+                "noise",
+                features.pick_noise,
+                note_name.clone(),
+                pitch_hz,
+                string_number,
+                fret_number,
+                features.chord_name.clone(),
+            );
+        }
+
+        if features.vibrato_depth > 0.18 && features.vibrato_rate > 0.16 {
+            self.push_event(
+                now_secs,
+                "vibrato",
+                features.vibrato_depth.max(features.vibrato_rate),
+                note_name.clone(),
+                pitch_hz,
+                string_number,
+                fret_number,
+                None,
+            );
+        } else if features.bend_cents.abs() > 45.0 && features.pitch_confidence > 0.4 {
+            self.push_event(
+                now_secs,
+                "bend",
+                (features.bend_cents.abs() / 160.0).clamp(0.0, 1.0),
+                note_name.clone(),
+                pitch_hz,
+                string_number,
+                fret_number,
+                None,
+            );
+        }
+
+        if features.chord_name != self.last_chord_name && features.chord_confidence > 0.5 {
+            self.push_event(
+                now_secs,
+                "chord_change",
+                features.chord_confidence,
+                None,
+                None,
+                None,
+                None,
+                features.chord_name.clone(),
+            );
+        }
+
+        self.last_gate = features.gate;
+        self.last_chord_name = features.chord_name.clone();
+        self.last_pitch_hz = features.pitch_hz.map(|pitch| pitch as f32);
+        self.expire(now_secs);
+        features.guitar_events = self.events.iter().cloned().collect();
+    }
+
+    fn push_event(
+        &mut self,
+        t: f64,
+        event_type: &str,
+        strength: f64,
+        note_name: Option<String>,
+        pitch_hz: Option<f64>,
+        string_number: Option<u32>,
+        fret_number: Option<u32>,
+        chord_name: Option<String>,
+    ) {
+        if let Some(last) = self.events.back() {
+            if last.r#type == event_type && t - last.t < 0.08 {
+                return;
+            }
+        }
+
+        self.events.push_back(GuitarEvent {
+            id: self.next_event_id,
+            t,
+            r#type: event_type.to_string(),
+            strength: strength.clamp(0.0, 1.0),
+            note_name,
+            pitch_hz,
+            string_number,
+            fret_number,
+            chord_name,
+        });
+        self.next_event_id = self.next_event_id.wrapping_add(1).max(1);
+        while self.events.len() > 32 {
+            self.events.pop_front();
+        }
+    }
+
+    fn expire(&mut self, now_secs: f64) {
+        while let Some(event) = self.events.front() {
+            if now_secs - event.t <= 1.5 {
+                break;
+            }
+            self.events.pop_front();
+        }
+    }
 }
 
 impl LiveAudioParams {
@@ -423,6 +653,7 @@ fn run_dsp(
     let mut note_stability = 0.0_f32;
     let mut previous_magnitudes = vec![0.0_f32; FFT_SIZE / 2];
     let mut pitch_history = VecDeque::<(f64, f32)>::with_capacity(80);
+    let mut guitar_state = GuitarAnalyzerState::new();
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(FFT_SIZE);
     let mut fft_buffer = vec![Complex::new(0.0, 0.0); FFT_SIZE];
@@ -448,6 +679,7 @@ fn run_dsp(
                 elapsed,
                 &mut previous_magnitudes,
                 &mut pitch_history,
+                &mut guitar_state,
                 &fft,
                 &mut fft_buffer,
             );
@@ -473,6 +705,7 @@ fn analyze_window(
     now_secs: f64,
     previous_magnitudes: &mut [f32],
     pitch_history: &mut VecDeque<(f64, f32)>,
+    guitar_state: &mut GuitarAnalyzerState,
     fft: &Arc<dyn rustfft::Fft<f32>>,
     fft_buffer: &mut [Complex<f32>],
 ) -> AudioFeatures {
@@ -515,8 +748,36 @@ fn analyze_window(
         _ => previous_stability * 0.88,
     };
     let chord = detect_chord(&chroma, harmonic_density);
+    let harmonic_ratio = harmonic_ratio(&spectral.magnitudes, sample_rate, pitch_hz);
+    let pick_noise = (spectral_flux * 0.45 + spectral.brightness * 0.32 + spectral.flatness * 0.23)
+        .clamp(0.0, 1.0);
+    let mute_amount = if gate {
+        (decay * 0.34 + spectral_flux * 0.18 + spectral.flatness * 0.24 + spectral.high * 0.18
+            - note_stability * 0.12)
+            .clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (string_number, fret_number, fretted_confidence) = infer_string_fret(pitch_hz, confidence)
+        .map(|candidate| (Some(candidate.0), Some(candidate.1), candidate.2))
+        .unwrap_or((None, None, 0.0));
+    let voicing = infer_voicing(&chroma, pitch_hz, chord.confidence.max(fretted_confidence));
+    let (guitar_technique, guitar_technique_confidence) = classify_guitar_technique(
+        gate,
+        pitch_hz,
+        confidence,
+        harmonic_density,
+        chord.confidence,
+        spectral_flux,
+        pick_noise,
+        mute_amount,
+        spectral.flatness,
+        bend_cents,
+        vibrato_depth,
+        vibrato_rate,
+    );
 
-    AudioFeatures {
+    let mut features = AudioFeatures {
         t: 0.0,
         rms: rms as f64,
         peak: peak as f64,
@@ -548,7 +809,24 @@ fn analyze_window(
         chord_quality: chord.quality,
         chord_name: chord.name,
         chord_confidence: chord.confidence as f64,
-    }
+        log_spectrum: spectral
+            .log_spectrum
+            .iter()
+            .map(|value| *value as f64)
+            .collect(),
+        spectral_contrast: spectral.contrast as f64,
+        harmonic_ratio: harmonic_ratio as f64,
+        pick_noise: pick_noise as f64,
+        mute_amount: mute_amount as f64,
+        guitar_technique,
+        guitar_technique_confidence: guitar_technique_confidence as f64,
+        string_number,
+        fret_number,
+        voicing,
+        guitar_events: Vec::new(),
+    };
+    guitar_state.update(&mut features, now_secs);
+    features
 }
 
 fn rms(samples: &[f32]) -> f32 {
@@ -572,6 +850,8 @@ struct SpectralFrame {
     brightness: f32,
     harmonic_density: f32,
     chroma: [f32; CHROMA_BINS],
+    log_spectrum: [f32; LOG_SPECTRUM_BINS],
+    contrast: f32,
     magnitudes: Vec<f32>,
 }
 
@@ -633,6 +913,8 @@ fn spectral_features(
     };
     let rolloff_hz = rolloff_hz(&magnitudes, sample_rate, total * 0.85);
     let flatness = spectral_flatness(&magnitudes);
+    let log_spectrum = log_spectrum(&magnitudes, sample_rate);
+    let contrast = spectral_contrast(&magnitudes, sample_rate);
     normalize_chroma(&mut chroma);
     let harmonic_density = harmonic_density(&chroma);
 
@@ -646,6 +928,8 @@ fn spectral_features(
         brightness: (bright / scale).clamp(0.0, 1.0),
         harmonic_density,
         chroma,
+        log_spectrum,
+        contrast,
         magnitudes,
     }
 }
@@ -695,6 +979,101 @@ fn spectral_flatness(magnitudes: &[f32]) -> f32 {
     (geometric / arithmetic.max(0.000001)).clamp(0.0, 1.0)
 }
 
+fn log_spectrum(magnitudes: &[f32], sample_rate: f32) -> [f32; LOG_SPECTRUM_BINS] {
+    let mut bins = [0.0_f32; LOG_SPECTRUM_BINS];
+    let min_freq = 70.0_f32;
+    let max_freq = 6000.0_f32;
+    let log_min = min_freq.ln();
+    let log_max = max_freq.ln();
+
+    for (index, mag) in magnitudes.iter().enumerate().skip(1) {
+        let freq = index as f32 * sample_rate / FFT_SIZE as f32;
+        if !(min_freq..=max_freq).contains(&freq) {
+            continue;
+        }
+        let bin = (((freq.ln() - log_min) / (log_max - log_min)) * LOG_SPECTRUM_BINS as f32)
+            .floor()
+            .clamp(0.0, (LOG_SPECTRUM_BINS - 1) as f32) as usize;
+        bins[bin] += *mag;
+    }
+
+    let max = bins.iter().copied().fold(0.0_f32, f32::max);
+    if max > 0.0001 {
+        for bin in bins.iter_mut() {
+            *bin = (*bin / max).sqrt().clamp(0.0, 1.0);
+        }
+    }
+    bins
+}
+
+fn spectral_contrast(magnitudes: &[f32], sample_rate: f32) -> f32 {
+    let bands = [
+        (80.0_f32, 160.0_f32),
+        (160.0, 320.0),
+        (320.0, 640.0),
+        (640.0, 1280.0),
+        (1280.0, 2560.0),
+        (2560.0, 5120.0),
+    ];
+    let mut total = 0.0;
+    let mut count = 0.0;
+
+    for (low, high) in bands {
+        let mut values = Vec::new();
+        for (index, mag) in magnitudes.iter().enumerate().skip(1) {
+            let freq = index as f32 * sample_rate / FFT_SIZE as f32;
+            if freq >= low && freq < high {
+                values.push(*mag);
+            }
+        }
+        if values.len() < 4 {
+            continue;
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let low_mean = values.iter().take(values.len() / 4).sum::<f32>() / (values.len() / 4).max(1) as f32;
+        let high_mean = values
+            .iter()
+            .rev()
+            .take(values.len() / 4)
+            .sum::<f32>()
+            / (values.len() / 4).max(1) as f32;
+        total += ((high_mean - low_mean) / high_mean.max(0.0001)).clamp(0.0, 1.0);
+        count += 1.0;
+    }
+
+    if count > 0.0 {
+        (total / count).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn harmonic_ratio(magnitudes: &[f32], sample_rate: f32, pitch_hz: Option<f32>) -> f32 {
+    let Some(pitch) = pitch_hz else {
+        return 0.0;
+    };
+    if pitch <= 0.0 {
+        return 0.0;
+    }
+
+    let mut harmonic = 0.0;
+    let mut total = 0.0;
+    for (index, mag) in magnitudes.iter().enumerate().skip(1) {
+        let freq = index as f32 * sample_rate / FFT_SIZE as f32;
+        if !(60.0..=6000.0).contains(&freq) {
+            continue;
+        }
+        total += *mag;
+        let nearest_harmonic = (freq / pitch).round().max(1.0);
+        let harmonic_freq = nearest_harmonic * pitch;
+        let tolerance = (pitch * 0.045).max(9.0);
+        if (freq - harmonic_freq).abs() <= tolerance {
+            harmonic += *mag;
+        }
+    }
+    (harmonic / total.max(0.0001)).clamp(0.0, 1.0)
+}
+
 fn normalize_chroma(chroma: &mut [f32; CHROMA_BINS]) {
     let max = chroma.iter().copied().fold(0.0_f32, f32::max);
     if max <= 0.0001 {
@@ -730,12 +1109,16 @@ struct ChordEstimate {
 }
 
 fn detect_chord(chroma: &[f32; CHROMA_BINS], harmonic_density: f32) -> ChordEstimate {
-    let templates: [(&str, &[(usize, f32)]); 5] = [
+    let templates: [(&str, &[(usize, f32)]); 9] = [
         ("major", &[(0, 1.0), (4, 0.82), (7, 0.92)]),
         ("minor", &[(0, 1.0), (3, 0.82), (7, 0.92)]),
         ("power", &[(0, 1.0), (7, 0.95)]),
         ("sus2", &[(0, 1.0), (2, 0.74), (7, 0.9)]),
         ("sus4", &[(0, 1.0), (5, 0.74), (7, 0.9)]),
+        ("major7", &[(0, 1.0), (4, 0.78), (7, 0.9), (11, 0.62)]),
+        ("minor7", &[(0, 1.0), (3, 0.78), (7, 0.9), (10, 0.62)]),
+        ("dominant7", &[(0, 1.0), (4, 0.78), (7, 0.9), (10, 0.62)]),
+        ("add9", &[(0, 1.0), (4, 0.76), (7, 0.88), (2, 0.58)]),
     ];
     let mut best_root = 0;
     let mut best_quality = "";
@@ -744,7 +1127,12 @@ fn detect_chord(chroma: &[f32; CHROMA_BINS], harmonic_density: f32) -> ChordEsti
 
     for root in 0..CHROMA_BINS {
         for (quality, intervals) in templates {
-            let score = chord_score(chroma, root, intervals);
+            let mut score = chord_score(chroma, root, intervals);
+            if quality == "power"
+                && chroma[(root + 3) % CHROMA_BINS].max(chroma[(root + 4) % CHROMA_BINS]) < 0.52
+            {
+                score = (score * 1.16).clamp(0.0, 1.0);
+            }
             if score > best_score {
                 next_score = best_score;
                 best_score = score;
@@ -765,6 +1153,23 @@ fn detect_chord(chroma: &[f32; CHROMA_BINS], harmonic_density: f32) -> ChordEsti
             quality: Some(best_quality.to_string()),
             name: Some(name),
             confidence,
+        };
+    }
+
+    let active_count = chroma.iter().filter(|value| **value > 0.34).count();
+    if harmonic_density > 0.34 && active_count <= 2 {
+        let root_index = chroma
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let root = NOTE_NAMES[root_index].to_string();
+        return ChordEstimate {
+            root: Some(root.clone()),
+            quality: Some("dyad".to_string()),
+            name: Some(chord_name(&root, "dyad")),
+            confidence: harmonic_density * 0.58,
         };
     }
 
@@ -803,7 +1208,24 @@ fn chord_score(chroma: &[f32; CHROMA_BINS], root: usize, intervals: &[(usize, f3
         .map(|(interval, _)| chroma[(root + *interval) % CHROMA_BINS])
         .sum::<f32>()
         / intervals.len() as f32;
-    (cosine * 0.78 + active_bonus * 0.22).clamp(0.0, 1.0)
+    let coverage = intervals
+        .iter()
+        .filter(|(interval, _)| chroma[(root + *interval) % CHROMA_BINS] > 0.28)
+        .count() as f32
+        / intervals.len() as f32;
+    let extension_penalty = if intervals.len() > 3 {
+        let extension_energy = intervals
+            .iter()
+            .skip(3)
+            .map(|(interval, _)| chroma[(root + *interval) % CHROMA_BINS])
+            .sum::<f32>()
+            / (intervals.len() - 3) as f32;
+        coverage * (extension_energy / 0.55).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    ((cosine * 0.78 + active_bonus * 0.22) * (0.72 + coverage * 0.28) * extension_penalty)
+        .clamp(0.0, 1.0)
 }
 
 fn chord_name(root: &str, quality: &str) -> String {
@@ -813,8 +1235,158 @@ fn chord_name(root: &str, quality: &str) -> String {
         "power" => format!("{root}5"),
         "sus2" => format!("{root}sus2"),
         "sus4" => format!("{root}sus4"),
+        "major7" => format!("{root}maj7"),
+        "minor7" => format!("{root}m7"),
+        "dominant7" => format!("{root}7"),
+        "add9" => format!("{root}add9"),
+        "dyad" => format!("{root} dyad"),
         _ => "Unknown".to_string(),
     }
+}
+
+fn classify_guitar_technique(
+    gate: bool,
+    pitch_hz: Option<f32>,
+    pitch_confidence: f32,
+    harmonic_density: f32,
+    chord_confidence: f32,
+    spectral_flux: f32,
+    pick_noise: f32,
+    mute_amount: f32,
+    spectral_flatness: f32,
+    bend_cents: f32,
+    vibrato_depth: f32,
+    vibrato_rate: f32,
+) -> (String, f32) {
+    if !gate {
+        return ("idle".to_string(), 1.0);
+    }
+    if pick_noise > 0.68 && pitch_confidence < 0.34 {
+        return ("scrape".to_string(), pick_noise);
+    }
+    if spectral_flatness > 0.58 && pitch_confidence < 0.28 {
+        return ("noise".to_string(), spectral_flatness);
+    }
+    if mute_amount > 0.55 && spectral_flux > 0.18 {
+        return ("palm_mute".to_string(), mute_amount.max(spectral_flux));
+    }
+    if vibrato_depth > 0.18 && vibrato_rate > 0.16 {
+        return ("vibrato".to_string(), vibrato_depth.max(vibrato_rate));
+    }
+    if bend_cents.abs() > 45.0 && pitch_confidence > 0.38 {
+        return ("bend".to_string(), (bend_cents.abs() / 160.0).clamp(0.0, 1.0));
+    }
+    if chord_confidence > 0.45 || harmonic_density > 0.54 {
+        return ("strum".to_string(), chord_confidence.max(harmonic_density));
+    }
+    if pitch_hz.is_some() && pitch_confidence > 0.45 {
+        let confidence = if spectral_flux < 0.18 {
+            pitch_confidence.max(0.52)
+        } else {
+            pitch_confidence
+        };
+        return ("single_note".to_string(), confidence);
+    }
+    ("sustain".to_string(), pitch_confidence.max(0.35))
+}
+
+fn infer_string_fret(pitch_hz: Option<f32>, pitch_confidence: f32) -> Option<(u32, u32, f32)> {
+    let pitch = pitch_hz?;
+    if pitch <= 0.0 || pitch_confidence < 0.25 {
+        return None;
+    }
+    let midi = 69.0 + 12.0 * (pitch / 440.0).log2();
+    let nearest = midi.round() as i32;
+    let cents = (midi - nearest as f32).abs() * 100.0;
+    let mut best = None::<(u32, u32, f32, f32)>;
+
+    for (string_number, open_midi) in GUITAR_TUNING {
+        let fret = nearest - open_midi;
+        if !(0..=24).contains(&fret) {
+            continue;
+        }
+        let position_penalty = if fret <= 12 { fret as f32 * 0.018 } else { 0.22 + fret as f32 * 0.022 };
+        let score = cents / 70.0 + position_penalty + (6_u32.saturating_sub(string_number) as f32) * 0.006;
+        let confidence = (pitch_confidence * (1.0 - cents / 65.0).clamp(0.25, 1.0)
+            * (1.0 - position_penalty * 0.55).clamp(0.2, 1.0))
+            .clamp(0.0, 1.0);
+        match best {
+            Some((_, _, best_score, _)) if best_score <= score => {}
+            _ => best = Some((string_number, fret as u32, score, confidence)),
+        }
+    }
+
+    best.map(|(string_number, fret, _, confidence)| (string_number, fret, confidence))
+}
+
+fn infer_voicing(
+    chroma: &[f32; CHROMA_BINS],
+    pitch_hz: Option<f32>,
+    base_confidence: f32,
+) -> Vec<GuitarVoicingCandidate> {
+    let mut active = chroma
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| **value > 0.24)
+        .map(|(pitch_class, value)| (pitch_class as u32, *value))
+        .collect::<Vec<_>>();
+    active.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    active.truncate(6);
+
+    let mut voicing = Vec::new();
+    for (pitch_class, energy) in active {
+        if let Some((string_number, fret_number, confidence)) =
+            infer_pitch_class_position(pitch_class, energy * base_confidence.max(0.35), pitch_hz)
+        {
+            if !voicing
+                .iter()
+                .any(|candidate: &GuitarVoicingCandidate| candidate.string_number == string_number)
+            {
+                voicing.push(GuitarVoicingCandidate {
+                    string_number,
+                    fret_number,
+                    pitch_class,
+                    confidence: confidence as f64,
+                });
+            }
+        }
+    }
+    voicing.sort_by(|a, b| b.string_number.cmp(&a.string_number));
+    voicing
+}
+
+fn infer_pitch_class_position(
+    pitch_class: u32,
+    confidence: f32,
+    pitch_hz: Option<f32>,
+) -> Option<(u32, u32, f32)> {
+    if let Some((string_number, fret_number, mono_confidence)) = infer_string_fret(pitch_hz, confidence) {
+        let midi = GUITAR_TUNING
+            .iter()
+            .find(|(candidate_string, _)| *candidate_string == string_number)
+            .map(|(_, open)| open + fret_number as i32)
+            .unwrap_or(0);
+        if midi.rem_euclid(CHROMA_BINS as i32) as u32 == pitch_class {
+            return Some((string_number, fret_number, mono_confidence));
+        }
+    }
+
+    let mut best = None::<(u32, u32, f32)>;
+    for (string_number, open_midi) in GUITAR_TUNING {
+        for fret in 0..=15 {
+            let class = (open_midi + fret).rem_euclid(CHROMA_BINS as i32) as u32;
+            if class != pitch_class {
+                continue;
+            }
+            let score = fret as f32 * 0.035 + (6_u32.saturating_sub(string_number) as f32) * 0.01;
+            let candidate_confidence = (confidence * (1.0 - score).clamp(0.25, 1.0)).clamp(0.0, 1.0);
+            match best {
+                Some((_, _, best_confidence)) if best_confidence >= candidate_confidence => {}
+                _ => best = Some((string_number, fret as u32, candidate_confidence)),
+            }
+        }
+    }
+    best
 }
 
 fn detect_pitch_mpm(samples: &[f32], sample_rate: f32) -> (Option<f32>, f32) {
@@ -959,6 +1531,7 @@ mod tests {
         let mut previous_magnitudes =
             spectral_features(samples, 48_000.0, &fft, &mut fft_buffer).magnitudes;
         let mut pitch_history = VecDeque::new();
+        let mut guitar_state = GuitarAnalyzerState::new();
         analyze_window(
             samples,
             48_000.0,
@@ -969,6 +1542,7 @@ mod tests {
             0.5,
             &mut previous_magnitudes,
             &mut pitch_history,
+            &mut guitar_state,
             &fft,
             &mut fft_buffer,
         )
@@ -1089,6 +1663,7 @@ mod tests {
         let mut previous_magnitudes =
             spectral_features(&low, 48_000.0, &fft, &mut fft_buffer).magnitudes;
         let mut pitch_history = VecDeque::new();
+        let mut guitar_state = GuitarAnalyzerState::new();
         let features = analyze_window(
             &high,
             48_000.0,
@@ -1099,6 +1674,7 @@ mod tests {
             0.5,
             &mut previous_magnitudes,
             &mut pitch_history,
+            &mut guitar_state,
             &fft,
             &mut fft_buffer,
         );
@@ -1134,5 +1710,124 @@ mod tests {
         assert!(bend_cents.abs() > 40.0);
         assert!(vibrato_depth > 0.2);
         assert!(vibrato_rate > 0.2);
+    }
+
+    #[test]
+    fn log_spectrum_tracks_frequency_regions() {
+        let low = analyze(&sine(110.0, 48_000.0, FFT_SIZE, 0.7), 0.0);
+        let mid = analyze(&sine(880.0, 48_000.0, FFT_SIZE, 0.7), 0.0);
+        let high = analyze(&sine(3600.0, 48_000.0, FFT_SIZE, 0.7), 0.0);
+        let low_peak = low
+            .log_spectrum
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(index, _)| index)
+            .unwrap();
+        let mid_peak = mid
+            .log_spectrum
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(index, _)| index)
+            .unwrap();
+        let high_peak = high
+            .log_spectrum
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(index, _)| index)
+            .unwrap();
+        assert!(low_peak < mid_peak);
+        assert!(mid_peak < high_peak);
+        assert_eq!(low.log_spectrum.len(), LOG_SPECTRUM_BINS);
+    }
+
+    #[test]
+    fn pick_noise_and_palm_mute_have_distinct_descriptors() {
+        let sustained = analyze(&guitar_note(110.0), 0.18);
+        let muted = analyze(&sine(110.0, 48_000.0, FFT_SIZE, 0.26), 0.72);
+        let scratch = (0..FFT_SIZE)
+            .map(|index| (((index * 31 + 7) % 113) as f32 / 56.5 - 1.0) * 0.35)
+            .collect::<Vec<_>>();
+        let scratch_features = analyze(&scratch, 0.0);
+        assert!(muted.mute_amount > sustained.mute_amount);
+        assert!(scratch_features.pick_noise > sustained.pick_noise);
+    }
+
+    #[test]
+    fn guitar_state_emits_gesture_events() {
+        let mut state = GuitarAnalyzerState::new();
+        let mut note = AudioFeatures {
+            t: 0.1,
+            rms: 0.3,
+            onset: 0.78,
+            gate: true,
+            pitch_hz: Some(110.0),
+            pitch_confidence: 0.82,
+            note_name: Some("A2".to_string()),
+            string_number: Some(5),
+            fret_number: Some(0),
+            guitar_technique: "single_note".to_string(),
+            guitar_technique_confidence: 0.8,
+            ..AudioFeatures::default()
+        };
+        state.update(&mut note, 0.1);
+        assert!(note.guitar_events.iter().any(|event| event.r#type == "note_on"));
+        assert!(note.guitar_events.iter().any(|event| event.r#type == "pluck"));
+
+        let mut bend = AudioFeatures {
+            t: 0.22,
+            rms: 0.32,
+            gate: true,
+            pitch_hz: Some(116.5),
+            pitch_confidence: 0.82,
+            bend_cents: 95.0,
+            note_name: Some("A#2".to_string()),
+            string_number: Some(5),
+            fret_number: Some(1),
+            guitar_technique: "bend".to_string(),
+            guitar_technique_confidence: 0.7,
+            ..AudioFeatures::default()
+        };
+        state.update(&mut bend, 0.22);
+        assert!(bend.guitar_events.iter().any(|event| event.r#type == "bend"));
+    }
+
+    #[test]
+    fn string_fret_inference_prefers_standard_open_strings() {
+        let e2 = infer_string_fret(Some(82.41), 0.9).unwrap();
+        assert_eq!((e2.0, e2.1), (6, 0));
+        let a2 = infer_string_fret(Some(110.0), 0.9).unwrap();
+        assert_eq!((a2.0, a2.1), (5, 0));
+        let e3 = infer_string_fret(Some(164.81), 0.9).unwrap();
+        assert_eq!((e3.0, e3.1), (4, 2));
+    }
+
+    #[test]
+    fn expanded_chord_templates_classify_sevenths_and_add9() {
+        let mut chroma = [0.0_f32; CHROMA_BINS];
+        for pitch_class in [0, 4, 7, 11] {
+            chroma[pitch_class] = 1.0;
+        }
+        let c_major7 = detect_chord(&chroma, harmonic_density(&chroma));
+        assert_eq!(c_major7.root.as_deref(), Some("C"));
+        assert_eq!(c_major7.quality.as_deref(), Some("major7"));
+
+        chroma = [0.0_f32; CHROMA_BINS];
+        for pitch_class in [9, 1, 4, 7] {
+            chroma[pitch_class] = 1.0;
+        }
+        let a7 = detect_chord(&chroma, harmonic_density(&chroma));
+        assert_eq!(a7.root.as_deref(), Some("A"));
+        assert_eq!(a7.quality.as_deref(), Some("dominant7"));
+
+        chroma = [0.0_f32; CHROMA_BINS];
+        for pitch_class in [2, 6, 9, 4] {
+            chroma[pitch_class] = 1.0;
+        }
+        let d_add9 = detect_chord(&chroma, harmonic_density(&chroma));
+        assert_eq!(d_add9.root.as_deref(), Some("D"));
+        assert_eq!(d_add9.quality.as_deref(), Some("add9"));
     }
 }

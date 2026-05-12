@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus, GuitarEvent, GuitarTechnique, GuitarVoicingCandidate } from '../shared/audio';
 import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
 
 type NativeAudioEngine = {
@@ -26,6 +26,25 @@ const SIM_CHORDS = [
   { root: 'A', quality: 'minor' as const, name: 'Am', classes: [9, 0, 4] },
   { root: 'D', quality: 'sus4' as const, name: 'Dsus4', classes: [2, 7, 9] }
 ];
+const GUITAR_STRINGS = [
+  { stringNumber: 6, midi: 40 },
+  { stringNumber: 5, midi: 45 },
+  { stringNumber: 4, midi: 50 },
+  { stringNumber: 3, midi: 55 },
+  { stringNumber: 2, midi: 59 },
+  { stringNumber: 1, midi: 64 }
+];
+const VALID_TECHNIQUES = new Set<GuitarTechnique>([
+  'idle',
+  'single_note',
+  'strum',
+  'palm_mute',
+  'scrape',
+  'noise',
+  'sustain',
+  'bend',
+  'vibrato'
+]);
 
 type SimulatorParams = Pick<AudioStartConfig, 'inputGain' | 'gateThreshold'>;
 
@@ -150,11 +169,17 @@ function normalizeFeatures(features: Partial<AudioFeatures>): AudioFeatures {
     ...DEFAULT_FEATURES,
     ...features,
     chroma: normalizeChroma(features.chroma),
+    logSpectrum: normalizeVector(features.logSpectrum, 36),
+    voicing: normalizeVoicing(features.voicing),
+    guitarEvents: normalizeGuitarEvents(features.guitarEvents),
     pitchHz: features.pitchHz ?? null,
     noteName: features.noteName ?? null,
     chordRoot: features.chordRoot ?? null,
     chordQuality: features.chordQuality ?? null,
-    chordName: features.chordName ?? null
+    chordName: features.chordName ?? null,
+    guitarTechnique: normalizeTechnique(features.guitarTechnique),
+    stringNumber: normalizeNullableNumber(features.stringNumber),
+    fretNumber: normalizeNullableNumber(features.fretNumber)
   };
 }
 
@@ -209,6 +234,31 @@ function makeSimulatorFeatures(t: number, params: SimulatorParams): AudioFeature
   const zeroCrossingRate = clamp01(high * 0.55 + noisyStrum * 0.42);
   const brightness = clamp01(high * 0.82 + spectralFlatness * 0.24);
   const harmonicDensity = chord ? clamp01(0.35 + chord.classes.length * 0.11 + mid * 0.18) : 0;
+  const spectralContrast = clamp01(0.24 + high * 0.28 + spectralFlux * 0.22 + harmonicDensity * 0.18);
+  const harmonicRatio = clamp01(confidence * (1 - spectralFlatness * 0.5));
+  const pickNoise = clamp01(high * 0.42 + spectralFlux * 0.36 + spectralFlatness * 0.22);
+  const muteAmount = clamp01(mutedRun * 0.75 + spectralFlatness * 0.18 + (phrase > 5.2 && phrase < 6.2 ? 0.22 : 0));
+  const guitarTechnique = getSimulatorTechnique({
+    silence,
+    mutedRun,
+    noisyStrum,
+    sustained,
+    bend,
+    vibrato,
+    harmonicDensity
+  });
+  const fretted = inferStringFret(pitchHz, confidence);
+  const voicing = makeSimulatorVoicing(chroma, pitchHz, chord ? 0.7 : confidence);
+  const guitarEvents = makeSimulatorEvents(t, {
+    gate,
+    attackPulse,
+    spectralFlux,
+    guitarTechnique,
+    noteName: note.noteName,
+    pitchHz,
+    fretted,
+    chordName: chord?.name ?? null
+  });
 
   return {
     t,
@@ -241,7 +291,18 @@ function makeSimulatorFeatures(t: number, params: SimulatorParams): AudioFeature
     chordRoot: gate && chord ? chord.root : null,
     chordQuality: gate && chord ? chord.quality : null,
     chordName: gate && chord ? chord.name : null,
-    chordConfidence: gate && chord ? clamp01(0.58 + mid * 0.28 - noisyStrum * 0.22) : 0
+    chordConfidence: gate && chord ? clamp01(0.58 + mid * 0.28 - noisyStrum * 0.22) : 0,
+    logSpectrum: makeSimulatorLogSpectrum(low, mid, high, pitchHz, gate),
+    spectralContrast,
+    harmonicRatio,
+    pickNoise,
+    muteAmount,
+    guitarTechnique,
+    guitarTechniqueConfidence: gate ? clamp01(0.56 + Math.max(mutedRun, noisyStrum, sustained, Math.abs(vibrato)) * 0.34) : 1,
+    stringNumber: gate ? fretted?.stringNumber ?? null : null,
+    fretNumber: gate ? fretted?.fretNumber ?? null : null,
+    voicing: gate ? voicing : [],
+    guitarEvents
   };
 }
 
@@ -271,6 +332,58 @@ function normalizeChroma(chroma: number[] | undefined): number[] {
   return Array.from({ length: 12 }, (_, index) => clamp01(Number(chroma[index]) || 0));
 }
 
+function normalizeVector(values: number[] | undefined, length: number): number[] {
+  if (!Array.isArray(values)) {
+    return Array.from({ length }, (_, index) => DEFAULT_FEATURES.logSpectrum[index] ?? 0);
+  }
+  return Array.from({ length }, (_, index) => clamp01(Number(values[index]) || 0));
+}
+
+function normalizeNullableNumber(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizeTechnique(value: unknown): GuitarTechnique {
+  return typeof value === 'string' && VALID_TECHNIQUES.has(value as GuitarTechnique) ? (value as GuitarTechnique) : 'idle';
+}
+
+function normalizeVoicing(value: GuitarVoicingCandidate[] | undefined): GuitarVoicingCandidate[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((candidate) => ({
+      stringNumber: Number(candidate.stringNumber),
+      fretNumber: Number(candidate.fretNumber),
+      pitchClass: Number(candidate.pitchClass),
+      confidence: clamp01(Number(candidate.confidence) || 0)
+    }))
+    .filter((candidate) =>
+      Number.isFinite(candidate.stringNumber) &&
+      Number.isFinite(candidate.fretNumber) &&
+      Number.isFinite(candidate.pitchClass)
+    );
+}
+
+function normalizeGuitarEvents(value: GuitarEvent[] | undefined): GuitarEvent[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((event) => ({
+      id: Number(event.id) || 0,
+      t: Number(event.t) || 0,
+      type: event.type,
+      strength: clamp01(Number(event.strength) || 0),
+      noteName: event.noteName ?? null,
+      pitchHz: normalizeNullableNumber(event.pitchHz),
+      stringNumber: normalizeNullableNumber(event.stringNumber),
+      fretNumber: normalizeNullableNumber(event.fretNumber),
+      chordName: event.chordName ?? null
+    }))
+    .filter((event) => event.id > 0 && typeof event.type === 'string');
+}
+
 function makeSimulatorChroma(
   pitchHz: number,
   chord: (typeof SIM_CHORDS)[number] | null,
@@ -293,6 +406,124 @@ function makeSimulatorChroma(
 function pitchClassFromHz(freq: number): number {
   const midi = Math.round(69 + 12 * Math.log2(freq / 440));
   return ((midi % 12) + 12) % 12;
+}
+
+function inferStringFret(pitchHz: number, confidence: number): { stringNumber: number; fretNumber: number; confidence: number } | null {
+  if (!Number.isFinite(pitchHz) || pitchHz <= 0 || confidence < 0.2) {
+    return null;
+  }
+  const midi = Math.round(69 + 12 * Math.log2(pitchHz / 440));
+  let best: { stringNumber: number; fretNumber: number; confidence: number; score: number } | null = null;
+  GUITAR_STRINGS.forEach((string) => {
+    const fret = midi - string.midi;
+    if (fret < 0 || fret > 24) {
+      return;
+    }
+    const score = fret <= 12 ? fret * 0.018 : 0.22 + fret * 0.022;
+    const candidate = {
+      stringNumber: string.stringNumber,
+      fretNumber: fret,
+      confidence: clamp01(confidence * (1 - score * 0.5)),
+      score
+    };
+    if (!best || candidate.score < best.score) {
+      best = candidate;
+    }
+  });
+  return best;
+}
+
+function makeSimulatorVoicing(chroma: number[], pitchHz: number, confidence: number): GuitarVoicingCandidate[] {
+  const mono = inferStringFret(pitchHz, confidence);
+  const used = new Set<number>();
+  const voicing: GuitarVoicingCandidate[] = [];
+  if (mono) {
+    used.add(mono.stringNumber);
+    voicing.push({ ...mono, pitchClass: pitchClassFromHz(pitchHz) });
+  }
+  chroma
+    .map((value, pitchClass) => ({ value, pitchClass }))
+    .filter((item) => item.value > 0.3)
+    .slice(0, 6)
+    .forEach((item) => {
+      const candidate = GUITAR_STRINGS.find((string) => !used.has(string.stringNumber) && (string.midi % 12) === item.pitchClass);
+      if (!candidate) {
+        return;
+      }
+      used.add(candidate.stringNumber);
+      voicing.push({
+        stringNumber: candidate.stringNumber,
+        fretNumber: 0,
+        pitchClass: item.pitchClass,
+        confidence: clamp01(item.value * confidence)
+      });
+    });
+  return voicing;
+}
+
+function getSimulatorTechnique(input: {
+  silence: boolean;
+  mutedRun: number;
+  noisyStrum: number;
+  sustained: number;
+  bend: number;
+  vibrato: number;
+  harmonicDensity: number;
+}): GuitarTechnique {
+  if (input.silence) return 'idle';
+  if (input.noisyStrum > 0.55) return 'scrape';
+  if (input.mutedRun > 0.35) return 'palm_mute';
+  if (Math.abs(input.vibrato) > 0.35) return 'vibrato';
+  if (input.bend > 0.08) return 'bend';
+  if (input.harmonicDensity > 0.52) return 'strum';
+  if (input.sustained > 0.35) return 'sustain';
+  return 'single_note';
+}
+
+function makeSimulatorLogSpectrum(low: number, mid: number, high: number, pitchHz: number, gate: boolean): number[] {
+  if (!gate) {
+    return Array.from({ length: 36 }, () => 0);
+  }
+  const pitchClass = pitchClassFromHz(pitchHz);
+  return Array.from({ length: 36 }, (_, index) => {
+    const region = index < 10 ? low : index < 24 ? mid : high;
+    const harmonic = index % 12 === pitchClass ? 0.55 : index % 12 === (pitchClass + 7) % 12 ? 0.35 : 0;
+    return clamp01(region * (0.35 + index / 72) + harmonic);
+  });
+}
+
+function makeSimulatorEvents(
+  t: number,
+  input: {
+    gate: boolean;
+    attackPulse: number;
+    spectralFlux: number;
+    guitarTechnique: GuitarTechnique;
+    noteName: string;
+    pitchHz: number;
+    fretted: { stringNumber: number; fretNumber: number } | null;
+    chordName: string | null;
+  }
+): GuitarEvent[] {
+  if (!input.gate) {
+    return [];
+  }
+  const strength = clamp01(Math.max(input.attackPulse, input.spectralFlux));
+  if (strength < 0.35 && input.guitarTechnique !== 'vibrato' && input.guitarTechnique !== 'bend') {
+    return [];
+  }
+  const type = input.guitarTechnique === 'strum' || input.guitarTechnique === 'scrape' ? 'strum' : input.guitarTechnique === 'palm_mute' ? 'mute' : input.guitarTechnique === 'bend' ? 'bend' : input.guitarTechnique === 'vibrato' ? 'vibrato' : 'pluck';
+  return [{
+    id: Math.floor(t * 1000),
+    t,
+    type,
+    strength: Math.max(strength, 0.45),
+    noteName: input.noteName,
+    pitchHz: input.pitchHz,
+    stringNumber: input.fretted?.stringNumber ?? null,
+    fretNumber: input.fretted?.fretNumber ?? null,
+    chordName: input.chordName
+  }];
 }
 
 function noise(x: number): number {

@@ -79,6 +79,10 @@ try {
     await page.waitForSelector('.meter-strip', { timeout: 10_000 });
     await page.waitForSelector('.tuner-panel .tuner-needle', { timeout: 10_000 });
     await page.waitForSelector('.record-panel', { timeout: 10_000 });
+    await page.waitForSelector('.spectrum-bars', { timeout: 10_000 });
+    await page.getByRole('button', { name: '+ 3D' }).click();
+    await page.locator('.layer-card').last().locator('select').selectOption('guitarGlyph3d');
+    await page.waitForTimeout(250);
   } catch (error) {
     const body = await page.locator('body').innerText().catch(() => '');
     throw new Error(`Renderer did not mount canvas.\nErrors:\n${errors.join('\n')}\nBody:\n${body}\n${error}`);
@@ -89,6 +93,8 @@ try {
   const tunerNeedleCount = await page.locator('.tuner-needle').count();
   const recordButtonCount = await page.getByRole('button', { name: 'Record' }).count();
   const stopButtonCount = await page.getByRole('button', { name: 'Stop' }).count();
+  const spectrumPanelCount = await page.locator('.spectrum-bars').count();
+  const guitarGlyphOptionCount = await page.locator('select option[value="guitarGlyph3d"]').count();
   await browser.close();
 
   if (errors.length > 0) {
@@ -103,8 +109,11 @@ try {
   if (recordButtonCount !== 1 || stopButtonCount < 2) {
     throw new Error(`Unexpected recording controls: record=${recordButtonCount} stop=${stopButtonCount}`);
   }
+  if (spectrumPanelCount !== 1 || guitarGlyphOptionCount < 1) {
+    throw new Error(`Unexpected guitar diagnostics/glyph controls: spectrum=${spectrumPanelCount} glyphOptions=${guitarGlyphOptionCount}`);
+  }
 
-  console.log(JSON.stringify({ canvasCount, meterCount, tunerCount, tunerNeedleCount, recordButtonCount, stopButtonCount }, null, 2));
+  console.log(JSON.stringify({ canvasCount, meterCount, tunerCount, tunerNeedleCount, recordButtonCount, stopButtonCount, spectrumPanelCount, guitarGlyphOptionCount }, null, 2));
 } finally {
   server.kill('SIGTERM');
 }
