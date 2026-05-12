@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
-import { DEFAULT_FEATURES } from '../shared/audio';
+import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
 
 type NativeAudioEngine = {
   listDevices: () => AudioDevice[];
@@ -21,11 +21,17 @@ const NOTE_SEQUENCE = [
   { noteName: 'E4', pitchHz: 329.63 }
 ];
 
+type SimulatorParams = Pick<AudioStartConfig, 'inputGain' | 'gateThreshold'>;
+
 export class AudioEngineHost {
   private native: NativeAudioEngine | null;
   private mode: AudioMode = 'simulator';
   private running = false;
   private startedAt = performance.now();
+  private simulatorParams: SimulatorParams = {
+    inputGain: DEFAULT_START_CONFIG.inputGain,
+    gateThreshold: DEFAULT_START_CONFIG.gateThreshold
+  };
   private latestStatus: AudioStatus;
 
   constructor() {
@@ -58,6 +64,10 @@ export class AudioEngineHost {
     this.mode = config.mode;
     this.running = true;
     this.startedAt = performance.now();
+    this.simulatorParams = {
+      inputGain: config.inputGain,
+      gateThreshold: config.gateThreshold
+    };
 
     if (config.mode === 'live' && this.native) {
       this.native.start(config);
@@ -112,6 +122,7 @@ export class AudioEngineHost {
   }
 
   setParams(params: AudioParamsUpdate): void {
+    this.simulatorParams = applyParams(this.simulatorParams, params);
     this.native?.setParams?.(params);
   }
 
@@ -124,7 +135,7 @@ export class AudioEngineHost {
       return DEFAULT_FEATURES;
     }
 
-    return makeSimulatorFeatures((performance.now() - this.startedAt) / 1000);
+    return makeSimulatorFeatures((performance.now() - this.startedAt) / 1000, this.simulatorParams);
   }
 }
 
@@ -163,7 +174,7 @@ function loadNativeAudioEngine(): NativeAudioEngine | null {
   return null;
 }
 
-function makeSimulatorFeatures(t: number): AudioFeatures {
+function makeSimulatorFeatures(t: number, params: SimulatorParams): AudioFeatures {
   const phrase = t % 18;
   const note = NOTE_SEQUENCE[Math.floor(t * 0.72) % NOTE_SEQUENCE.length];
   const attackPulse = pulse(phrase, 1.0, 0.06) + pulse(phrase, 4.2, 0.05) + pulse(phrase, 9.5, 0.04);
@@ -172,13 +183,14 @@ function makeSimulatorFeatures(t: number): AudioFeatures {
   const sustained = phrase > 1.0 && phrase < 5.2 ? 0.5 + 0.2 * Math.sin(t * 2.3) : 0;
   const bend = phrase > 9.2 && phrase < 12.2 ? (phrase - 9.2) / 3 : 0;
   const silence = phrase > 15.2;
-  const rms = silence ? 0.004 : clamp01(0.08 + sustained + mutedRun * 0.5 + noisyStrum + attackPulse * 0.8);
+  const rawRms = silence ? 0.004 : clamp01(0.08 + sustained + mutedRun * 0.5 + noisyStrum + attackPulse * 0.8);
+  const rms = clamp01(rawRms * params.inputGain);
   const high = clamp01(noisyStrum * 0.95 + attackPulse * 0.55 + 0.08 * Math.sin(t * 17) ** 2);
   const mid = clamp01(sustained * 0.8 + mutedRun * 0.35 + attackPulse * 0.35);
   const low = clamp01(rms * 0.5 + Math.max(0, Math.sin(t * 1.7)) * 0.18);
   const pitchHz = note.pitchHz * (1 + bend * 0.18 + Math.sin(t * 5.8) * 0.004);
   const confidence = silence || noisyStrum > 0.5 ? 0.18 : clamp01(0.62 + sustained * 0.36 - mutedRun * 0.25);
-  const gate = rms > 0.025;
+  const gate = rms > params.gateThreshold;
 
   return {
     t,
@@ -204,6 +216,17 @@ function pulse(x: number, center: number, width: number): number {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function applyParams(current: SimulatorParams, update: AudioParamsUpdate): SimulatorParams {
+  return {
+    inputGain: validParam(update.inputGain) ?? current.inputGain,
+    gateThreshold: validParam(update.gateThreshold) ?? current.gateThreshold
+  };
+}
+
+function validParam(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function noise(x: number): number {

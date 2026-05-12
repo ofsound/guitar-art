@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AudioDevice, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus, LayerState } from '../shared/audio';
+import { useEffect, useMemo, useState } from 'react';
+import type { AudioDevice, AudioMode, AudioStartConfig, AudioStatus, LayerState } from '../shared/audio';
 import { DEFAULT_START_CONFIG } from '../shared/audio';
 import { getAudioClient } from './audioClient';
 import { useAudioFeatures } from './useAudioFeatures';
@@ -7,6 +7,9 @@ import { VisualSynth } from './VisualSynth';
 
 const INPUT_GAIN_MIN = 0.2;
 const INPUT_GAIN_MAX = 10;
+const GATE_THRESHOLD_MIN = 0.005;
+const GATE_THRESHOLD_MAX = 0.95;
+const GATE_THRESHOLD_STEP = 0.005;
 
 export function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -20,26 +23,6 @@ export function App() {
   });
   const { latest, latestRef } = useAudioFeatures();
   const audio = getAudioClient();
-  const pendingParamsRef = useRef<AudioParamsUpdate>({});
-  const paramsFrameRef = useRef<number | null>(null);
-
-  const pushLiveParams = useCallback(
-    (params: AudioParamsUpdate) => {
-      pendingParamsRef.current = { ...pendingParamsRef.current, ...params };
-
-      if (paramsFrameRef.current !== null) {
-        return;
-      }
-
-      paramsFrameRef.current = window.requestAnimationFrame(() => {
-        const next = pendingParamsRef.current;
-        pendingParamsRef.current = {};
-        paramsFrameRef.current = null;
-        void audio.setParams(next).catch(() => undefined);
-      });
-    },
-    [audio]
-  );
 
   useEffect(() => {
     audio.listDevices().then(setDevices).catch(() => setDevices([]));
@@ -49,14 +32,6 @@ export function App() {
       off();
     };
   }, [audio]);
-
-  useEffect(() => {
-    return () => {
-      if (paramsFrameRef.current !== null) {
-        window.cancelAnimationFrame(paramsFrameRef.current);
-      }
-    };
-  }, []);
 
   const selectedDevice = useMemo(
     () => devices.find((device) => device.id === config.deviceId),
@@ -72,6 +47,16 @@ export function App() {
 
   async function stop() {
     await audio.stop();
+  }
+
+  function updateInputGain(inputGain: number) {
+    setConfig((prev) => ({ ...prev, inputGain }));
+    void audio.setParams({ inputGain }).catch(() => undefined);
+  }
+
+  function updateGateThreshold(gateThreshold: number) {
+    setConfig((prev) => ({ ...prev, gateThreshold }));
+    void audio.setParams({ gateThreshold }).catch(() => undefined);
   }
 
   return (
@@ -142,24 +127,18 @@ export function App() {
             max={INPUT_GAIN_MAX}
             step="0.05"
             value={config.inputGain}
-            onChange={(event) => {
-              const inputGain = Number(event.target.value);
-              setConfig((prev) => ({ ...prev, inputGain }));
-              pushLiveParams({ inputGain });
-            }}
+            onInput={(event) => updateInputGain(Number(event.currentTarget.value))}
           />
-          <label>Gate {config.gateThreshold.toFixed(3)}</label>
+          <label>
+            Gate {Math.round(config.gateThreshold * 100)}% ({config.gateThreshold.toFixed(3)})
+          </label>
           <input
             type="range"
-            min="0.005"
-            max="0.12"
-            step="0.005"
+            min={GATE_THRESHOLD_MIN}
+            max={GATE_THRESHOLD_MAX}
+            step={GATE_THRESHOLD_STEP}
             value={config.gateThreshold}
-            onChange={(event) => {
-              const gateThreshold = Number(event.target.value);
-              setConfig((prev) => ({ ...prev, gateThreshold }));
-              pushLiveParams({ gateThreshold });
-            }}
+            onInput={(event) => updateGateThreshold(Number(event.currentTarget.value))}
           />
         </section>
 

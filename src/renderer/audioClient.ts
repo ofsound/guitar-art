@@ -1,5 +1,5 @@
 import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
-import { DEFAULT_FEATURES } from '../shared/audio';
+import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
 
 type AudioClient = Window['guitarArt']['audio'];
 
@@ -15,6 +15,10 @@ const NOTES = [
 let fallbackStartedAt = performance.now();
 let fallbackRunning = false;
 let fallbackMode: AudioMode = 'simulator';
+let fallbackParams = {
+  inputGain: DEFAULT_START_CONFIG.inputGain,
+  gateThreshold: DEFAULT_START_CONFIG.gateThreshold
+};
 const fallbackStatusListeners = new Set<(status: AudioStatus) => void>();
 
 export function getAudioClient(): AudioClient {
@@ -27,6 +31,10 @@ const fallbackAudioClient: AudioClient = {
     fallbackStartedAt = performance.now();
     fallbackRunning = true;
     fallbackMode = config.mode === 'live' ? 'simulator' : config.mode;
+    fallbackParams = {
+      inputGain: config.inputGain,
+      gateThreshold: config.gateThreshold
+    };
     emitFallbackStatus('Electron preload unavailable; browser simulator is running.');
   },
   stop: async (): Promise<void> => {
@@ -37,13 +45,15 @@ const fallbackAudioClient: AudioClient = {
     fallbackMode = mode === 'live' ? 'simulator' : mode;
     emitFallbackStatus('Electron preload unavailable; simulator mode selected.');
   },
-  setParams: async (_params: AudioParamsUpdate): Promise<void> => undefined,
+  setParams: async (params: AudioParamsUpdate): Promise<void> => {
+    fallbackParams = applyParams(fallbackParams, params);
+  },
   getLatestFeatures: async (): Promise<AudioFeatures> => {
     if (!fallbackRunning) {
       return DEFAULT_FEATURES;
     }
 
-    return makeSimulatorFeatures((performance.now() - fallbackStartedAt) / 1000);
+    return makeSimulatorFeatures((performance.now() - fallbackStartedAt) / 1000, fallbackParams);
   },
   onStatus: (listener: (status: AudioStatus) => void) => {
     fallbackStatusListeners.add(listener);
@@ -68,7 +78,7 @@ function makeFallbackStatus(message: string): AudioStatus {
   };
 }
 
-function makeSimulatorFeatures(t: number): AudioFeatures {
+function makeSimulatorFeatures(t: number, params: Pick<AudioStartConfig, 'inputGain' | 'gateThreshold'>): AudioFeatures {
   const phrase = t % 18;
   const note = NOTES[Math.floor(t * 0.72) % NOTES.length];
   const attackPulse = pulse(phrase, 1.0, 0.06) + pulse(phrase, 4.2, 0.05) + pulse(phrase, 9.5, 0.04);
@@ -77,13 +87,14 @@ function makeSimulatorFeatures(t: number): AudioFeatures {
   const sustained = phrase > 1.0 && phrase < 5.2 ? 0.5 + 0.2 * Math.sin(t * 2.3) : 0;
   const bend = phrase > 9.2 && phrase < 12.2 ? (phrase - 9.2) / 3 : 0;
   const silence = phrase > 15.2;
-  const rms = silence ? 0.004 : clamp01(0.08 + sustained + mutedRun * 0.5 + noisyStrum + attackPulse * 0.8);
+  const rawRms = silence ? 0.004 : clamp01(0.08 + sustained + mutedRun * 0.5 + noisyStrum + attackPulse * 0.8);
+  const rms = clamp01(rawRms * params.inputGain);
   const high = clamp01(noisyStrum * 0.95 + attackPulse * 0.55 + 0.08 * Math.sin(t * 17) ** 2);
   const mid = clamp01(sustained * 0.8 + mutedRun * 0.35 + attackPulse * 0.35);
   const low = clamp01(rms * 0.5 + Math.max(0, Math.sin(t * 1.7)) * 0.18);
   const pitchHz = note.pitchHz * (1 + bend * 0.18 + Math.sin(t * 5.8) * 0.004);
   const pitchConfidence = silence || noisyStrum > 0.5 ? 0.18 : clamp01(0.62 + sustained * 0.36 - mutedRun * 0.25);
-  const gate = rms > 0.025;
+  const gate = rms > params.gateThreshold;
 
   return {
     t,
@@ -109,6 +120,20 @@ function pulse(x: number, center: number, width: number): number {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function applyParams(
+  current: Pick<AudioStartConfig, 'inputGain' | 'gateThreshold'>,
+  update: AudioParamsUpdate
+): Pick<AudioStartConfig, 'inputGain' | 'gateThreshold'> {
+  return {
+    inputGain: validParam(update.inputGain) ?? current.inputGain,
+    gateThreshold: validParam(update.gateThreshold) ?? current.gateThreshold
+  };
+}
+
+function validParam(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function noise(x: number): number {
