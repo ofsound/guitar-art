@@ -1,4 +1,13 @@
-import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type {
+  AudioDevice,
+  AudioFeatures,
+  AudioMode,
+  AudioParamsUpdate,
+  AudioStartConfig,
+  AudioStatus,
+  PngExportRequest,
+  PngExportResult
+} from '../shared/audio';
 
 declare global {
   interface Window {
@@ -11,6 +20,9 @@ declare global {
         setParams: (params: AudioParamsUpdate) => Promise<void>;
         getLatestFeatures: () => Promise<AudioFeatures>;
         onStatus: (listener: (status: AudioStatus) => void) => () => void;
+      };
+      art: {
+        exportPng: (request: PngExportRequest) => Promise<PngExportResult>;
       };
     };
   }

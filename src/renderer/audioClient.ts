@@ -1,7 +1,17 @@
-import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type {
+  AudioDevice,
+  AudioFeatures,
+  AudioMode,
+  AudioParamsUpdate,
+  AudioStartConfig,
+  AudioStatus,
+  PngExportRequest,
+  PngExportResult
+} from '../shared/audio';
 import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
 
 type AudioClient = Window['guitarArt']['audio'];
+type ArtClient = Window['guitarArt']['art'];
 
 const NOTES = [
   { noteName: 'E2', pitchHz: 82.41 },
@@ -23,6 +33,10 @@ const fallbackStatusListeners = new Set<(status: AudioStatus) => void>();
 
 export function getAudioClient(): AudioClient {
   return window.guitarArt?.audio ?? fallbackAudioClient;
+}
+
+export function getArtClient(): ArtClient {
+  return window.guitarArt?.art ?? fallbackArtClient;
 }
 
 const fallbackAudioClient: AudioClient = {
@@ -61,6 +75,16 @@ const fallbackAudioClient: AudioClient = {
     return () => {
       fallbackStatusListeners.delete(listener);
     };
+  }
+};
+
+const fallbackArtClient: ArtClient = {
+  exportPng: async (request: PngExportRequest): Promise<PngExportResult> => {
+    const anchor = document.createElement('a');
+    anchor.href = request.dataUrl;
+    anchor.download = request.suggestedName.endsWith('.png') ? request.suggestedName : `${request.suggestedName}.png`;
+    anchor.click();
+    return { canceled: false };
   }
 };
 

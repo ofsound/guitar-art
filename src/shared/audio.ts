@@ -50,9 +50,45 @@ export type AudioStatus = {
   nativeAvailable: boolean;
 };
 
-export type LayerState = {
-  draw2d: boolean;
-  draw3d: boolean;
+export type VisualLayerKind = '2d' | '3d';
+
+export type VisualLayerMode = 'trails2d' | 'lineArt2d' | 'forms3d' | 'spectralField3d';
+
+export type VisualLayerControls = {
+  sensitivity: number;
+  smoothing: number;
+  gateThreshold: number;
+  motionAmount: number;
+  scaleAmount: number;
+  colorAmount: number;
+  opacity: number;
+  requiresGate: boolean;
+};
+
+export type VisualLayer = {
+  id: string;
+  name: string;
+  kind: VisualLayerKind;
+  mode: VisualLayerMode;
+  enabled: boolean;
+  controls: VisualLayerControls;
+};
+
+export type VisualLayerPreset = {
+  id: string;
+  name: string;
+  layers: VisualLayer[];
+  createdAt: number;
+};
+
+export type PngExportRequest = {
+  dataUrl: string;
+  suggestedName: string;
+};
+
+export type PngExportResult = {
+  canceled: boolean;
+  filePath?: string;
 };
 
 export const DEFAULT_FEATURES: AudioFeatures = {
@@ -81,3 +117,33 @@ export const DEFAULT_START_CONFIG: AudioStartConfig = {
   inputGain: 1,
   gateThreshold: 0.025
 };
+
+export const DEFAULT_LAYER_CONTROLS: VisualLayerControls = {
+  sensitivity: 1,
+  smoothing: 0.35,
+  gateThreshold: 0.025,
+  motionAmount: 1,
+  scaleAmount: 1,
+  colorAmount: 1,
+  opacity: 0.9,
+  requiresGate: false
+};
+
+export const DEFAULT_VISUAL_LAYERS: VisualLayer[] = [
+  {
+    id: 'default-2d-trails',
+    name: '2D Trails',
+    kind: '2d',
+    mode: 'trails2d',
+    enabled: true,
+    controls: { ...DEFAULT_LAYER_CONTROLS, opacity: 0.8 }
+  },
+  {
+    id: 'default-3d-forms',
+    name: '3D Forms',
+    kind: '3d',
+    mode: 'forms3d',
+    enabled: true,
+    controls: { ...DEFAULT_LAYER_CONTROLS, requiresGate: true, opacity: 0.95 }
+  }
+];

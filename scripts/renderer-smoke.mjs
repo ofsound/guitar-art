@@ -58,12 +58,18 @@ try {
   try {
     await page.waitForSelector('.visual-host canvas', { timeout: 10_000 });
     await page.waitForSelector('.meter-strip', { timeout: 10_000 });
+    await page.waitForSelector('.tuner-panel .tuner-needle', { timeout: 10_000 });
+    await page.waitForSelector('.record-panel', { timeout: 10_000 });
   } catch (error) {
     const body = await page.locator('body').innerText().catch(() => '');
     throw new Error(`Renderer did not mount canvas.\nErrors:\n${errors.join('\n')}\nBody:\n${body}\n${error}`);
   }
   const canvasCount = await page.locator('.visual-host canvas').count();
   const meterCount = await page.locator('.meter').count();
+  const tunerCount = await page.locator('.tuner-panel').count();
+  const tunerNeedleCount = await page.locator('.tuner-needle').count();
+  const recordButtonCount = await page.getByRole('button', { name: 'Record' }).count();
+  const stopButtonCount = await page.getByRole('button', { name: 'Stop' }).count();
   await browser.close();
 
   if (errors.length > 0) {
@@ -72,8 +78,14 @@ try {
   if (canvasCount < 1 || meterCount < 9) {
     throw new Error(`Unexpected renderer shape: canvas=${canvasCount} meters=${meterCount}`);
   }
+  if (tunerCount !== 1 || tunerNeedleCount !== 1) {
+    throw new Error(`Unexpected tuner shape: panels=${tunerCount} needles=${tunerNeedleCount}`);
+  }
+  if (recordButtonCount !== 1 || stopButtonCount < 2) {
+    throw new Error(`Unexpected recording controls: record=${recordButtonCount} stop=${stopButtonCount}`);
+  }
 
-  console.log(JSON.stringify({ canvasCount, meterCount }, null, 2));
+  console.log(JSON.stringify({ canvasCount, meterCount, tunerCount, tunerNeedleCount, recordButtonCount, stopButtonCount }, null, 2));
 } finally {
   server.kill('SIGTERM');
 }

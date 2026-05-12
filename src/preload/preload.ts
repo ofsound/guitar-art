@@ -1,6 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus } from '../shared/audio';
+import type {
+  AudioDevice,
+  AudioFeatures,
+  AudioMode,
+  AudioParamsUpdate,
+  AudioStartConfig,
+  AudioStatus,
+  PngExportRequest,
+  PngExportResult
+} from '../shared/audio';
 import {
+  ART_EXPORT_PNG,
   AUDIO_GET_LATEST_FEATURES,
   AUDIO_LIST_DEVICES,
   AUDIO_SET_PARAMS,
@@ -25,6 +35,9 @@ const api = {
         ipcRenderer.off(AUDIO_STATUS, wrapped);
       };
     }
+  },
+  art: {
+    exportPng: (request: PngExportRequest): Promise<PngExportResult> => ipcRenderer.invoke(ART_EXPORT_PNG, request)
   }
 };
 
