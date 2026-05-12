@@ -39,20 +39,6 @@ input {
   overflow-y: auto;
 }
 
-.brand-title {
-  font-size: 24px;
-  font-weight: 760;
-  letter-spacing: 0;
-}
-
-.status-line {
-  margin-top: 6px;
-  min-height: 36px;
-  color: #9eaaa8;
-  font-size: 13px;
-  line-height: 1.35;
-}
-
 .control-group {
   display: grid;
   gap: 9px;
@@ -128,7 +114,55 @@ input[type='range'] {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.sidebar-bottom {
+  display: grid;
+  gap: 10px;
   margin-top: auto;
+}
+
+.sidebar-meter {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar-meter-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #b8c3c0;
+  font-size: 12px;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.sidebar-meter-label strong {
+  color: #f0f7f5;
+}
+
+.sidebar-meter-track {
+  position: relative;
+  height: 24px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.sidebar-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #78ffbd, #a8f7f5, #ffba72);
+  border-radius: inherit;
+}
+
+.sidebar-meter-gate {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: #f0f7f5;
+  box-shadow: 0 0 0 1px rgba(6, 16, 17, 0.55), 0 0 10px rgba(240, 247, 245, 0.55);
 }
 
 .viewport {
@@ -155,7 +189,7 @@ input[type='range'] {
   right: 18px;
   bottom: 18px;
   display: grid;
-  grid-template-columns: repeat(9, minmax(68px, 1fr)) auto auto;
+  grid-template-columns: repeat(9, minmax(68px, 1fr));
   gap: 8px;
   align-items: end;
   padding: 10px;
@@ -204,8 +238,7 @@ input[type='range'] {
   box-shadow: 0 0 16px rgba(168, 247, 245, 0.9);
 }
 
-.gate-pill,
-.engine-pill {
+.gate-pill {
   display: flex;
   align-items: center;
   justify-content: center;

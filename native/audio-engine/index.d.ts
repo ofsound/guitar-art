@@ -6,7 +6,6 @@ export declare class AudioEngine {
   start(config: AudioStartConfig): void
   stop(): void
   setMode(mode: string): void
-  setParams(params: AudioParamsUpdate): void
   getLatestFeatures(): AudioFeatures
 }
 
@@ -35,11 +34,6 @@ export interface AudioFeatures {
   onset: number
   gate: boolean
   clipping: boolean
-}
-
-export interface AudioParamsUpdate {
-  inputGain?: number
-  gateThreshold?: number
 }
 
 export interface AudioStartConfig {

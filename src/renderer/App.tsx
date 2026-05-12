@@ -77,11 +77,6 @@ export function App() {
   return (
     <div className="app-shell">
       <aside className="control-rail">
-        <div className="brand-block">
-          <div className="brand-title">Guitar Art</div>
-          <div className="status-line">{status.message}</div>
-        </div>
-
         <section className="control-group">
           <label>Input source</label>
           <div className="segmented">
@@ -194,11 +189,15 @@ export function App() {
             Stop
           </button>
         </section>
+        <div className="sidebar-bottom">
+          <SidebarGainMeter value={latest.rms} gateThreshold={config.gateThreshold} />
+          <div className={`gate-pill ${latest.gate ? 'open' : ''}`}>{latest.gate ? 'Gate open' : 'Idle'}</div>
+        </div>
       </aside>
 
       <main className="viewport">
         <VisualSynth featuresRef={latestRef} layers={layers} />
-        <MeterStrip features={latest} status={status} />
+        <MeterStrip features={latest} />
       </main>
     </div>
   );
@@ -209,7 +208,25 @@ function formatGainDb(gain: number): string {
   return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`;
 }
 
-function MeterStrip({ features, status }: { features: ReturnType<typeof useAudioFeatures>['latest']; status: AudioStatus }) {
+function SidebarGainMeter({ value, gateThreshold }: { value: number; gateThreshold: number }) {
+  const meterValue = Math.max(0, Math.min(1, value));
+  const gatePosition = Math.max(0, Math.min(1, gateThreshold));
+
+  return (
+    <div className="sidebar-meter">
+      <div className="sidebar-meter-label">
+        <span>Input</span>
+        <strong>{Math.round(meterValue * 100)}</strong>
+      </div>
+      <div className="sidebar-meter-track">
+        <div className="sidebar-meter-fill" style={{ width: `${Math.max(2, meterValue * 100)}%` }} />
+        <div className="sidebar-meter-gate" style={{ left: `${gatePosition * 100}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function MeterStrip({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
   return (
     <div className="meter-strip">
       <Meter label="RMS" value={features.rms} />
@@ -221,8 +238,6 @@ function MeterStrip({ features, status }: { features: ReturnType<typeof useAudio
       <Meter label="Pitch" value={features.pitchConfidence} note={features.noteName ?? '--'} />
       <Meter label="Stable" value={features.noteStability} />
       <Meter label="Onset" value={features.onset} pulse={features.onset > 0.3} />
-      <div className={`gate-pill ${features.gate ? 'open' : ''}`}>{features.gate ? 'Gate open' : 'Idle'}</div>
-      <div className="engine-pill">{status.nativeAvailable ? 'Native ready' : 'Simulator fallback'}</div>
     </div>
   );
 }
