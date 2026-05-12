@@ -31,14 +31,16 @@ const MODE_LABELS: Record<VisualLayerMode, string> = {
   trails2d: '2D Trails',
   lineArt2d: '2D Line Art',
   forms3d: '3D Forms',
-  spectralField3d: '3D Spectral Field'
+  spectralField3d: '3D Spectral Field',
+  chromaConstellation3d: '3D Chroma Constellation'
 };
 
 const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
   trails2d: '2d',
   lineArt2d: '2d',
   forms3d: '3d',
-  spectralField3d: '3d'
+  spectralField3d: '3d',
+  chromaConstellation3d: '3d'
 };
 
 type TunerReading = {
@@ -363,6 +365,7 @@ export function App() {
 
       <main className="viewport">
         <VisualSynth ref={visualSynthRef} featuresRef={latestRef} layers={layers} />
+        <DiagnosticsPanel features={latest} />
         <MeterStrip features={latest} />
       </main>
     </div>
@@ -673,6 +676,58 @@ function MeterStrip({ features }: { features: ReturnType<typeof useAudioFeatures
       <Meter label="Onset" value={features.onset} pulse={features.onset > 0.3} />
     </div>
   );
+}
+
+function DiagnosticsPanel({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
+  const chord = features.chordName ?? '--';
+  return (
+    <section className="diagnostics-panel">
+      <div className="diagnostics-header">
+        <span>Guitar data</span>
+        <strong>{chord}</strong>
+      </div>
+      <div className="chroma-bars" aria-label="Chroma energy">
+        {NOTE_NAMES.map((note, index) => (
+          <div className="chroma-bin" key={note}>
+            <div style={{ height: `${Math.max(3, clampPercent(features.chroma[index] ?? 0))}%` }} />
+            <span>{note}</span>
+          </div>
+        ))}
+      </div>
+      <div className="diagnostic-grid">
+        <DiagnosticStat label="Flux" value={features.spectralFlux} />
+        <DiagnosticStat label="Flat" value={features.spectralFlatness} />
+        <DiagnosticStat label="Noise" value={features.noisiness} />
+        <DiagnosticStat label="Bright" value={features.brightness} />
+        <DiagnosticStat label="Bend" value={features.bendCents} suffix="c" signed />
+        <DiagnosticStat label="Vib" value={features.vibratoDepth} />
+      </div>
+    </section>
+  );
+}
+
+function DiagnosticStat({
+  label,
+  value,
+  suffix = '',
+  signed = false
+}: {
+  label: string;
+  value: number;
+  suffix?: string;
+  signed?: boolean;
+}) {
+  const text = signed ? `${value >= 0 ? '+' : ''}${value.toFixed(0)}${suffix}` : `${Math.round(clampPercent(value))}`;
+  return (
+    <div className="diagnostic-stat">
+      <span>{label}</span>
+      <strong>{text}</strong>
+    </div>
+  );
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value * 100));
 }
 
 function Meter({ label, value, note, alert, pulse }: { label: string; value: number; note?: string; alert?: boolean; pulse?: boolean }) {

@@ -23,6 +23,12 @@ type LayerFrame = {
   mid: number;
   high: number;
   spectralCentroid: number;
+  spectralFlux: number;
+  brightness: number;
+  noisiness: number;
+  attack: number;
+  vibratoDepth: number;
+  vibratoRate: number;
   onset: number;
   noteStability: number;
   gateOpen: boolean;
@@ -73,7 +79,24 @@ type SpectralLayerContext = BaseLayerContext & {
   seeds: SeedPoint[];
 };
 
-type LayerContext = TwoDLayerContext | FormsLayerContext | SpectralLayerContext;
+type ChromaLayerContext = BaseLayerContext & {
+  type: 'chromaConstellation3d';
+  group: THREE.Group;
+  nodes: THREE.Mesh[];
+  nodeMaterials: THREE.MeshStandardMaterial[];
+  lineGeometry: THREE.BufferGeometry;
+  lineMaterial: THREE.LineBasicMaterial;
+  lines: THREE.LineSegments;
+  linePositions: Float32Array;
+  lineColors: Float32Array;
+  particles: Particle[];
+  particleGeometry: THREE.BufferGeometry;
+  particleMaterial: THREE.PointsMaterial;
+  particlePositions: Float32Array;
+  particleColors: Float32Array;
+};
+
+type LayerContext = TwoDLayerContext | FormsLayerContext | SpectralLayerContext | ChromaLayerContext;
 
 type RecordingState = {
   canvas: HTMLCanvasElement;
@@ -227,8 +250,10 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
           render2DLayer(context, layer, frame, dt, now, index);
         } else if (context.type === 'forms3d') {
           renderFormsLayer(context, layer, frame, features, dt, index);
-        } else {
+        } else if (context.type === 'spectralField3d') {
           renderSpectralFieldLayer(context, layer, frame, now, index);
+        } else {
+          renderChromaConstellationLayer(context, layer, frame, features, dt, now, index);
         }
       });
 
@@ -310,6 +335,9 @@ function createLayerContext(scene: THREE.Scene, layer: VisualLayer, width: numbe
   }
   if (layer.mode === 'forms3d') {
     return createFormsLayerContext(scene, layer);
+  }
+  if (layer.mode === 'chromaConstellation3d') {
+    return createChromaLayerContext(scene, layer);
   }
   return createSpectralFieldLayerContext(scene, layer);
 }
@@ -457,6 +485,90 @@ function createSpectralFieldLayerContext(scene: THREE.Scene, layer: VisualLayer)
   };
 }
 
+function createChromaLayerContext(scene: THREE.Scene, layer: VisualLayer): ChromaLayerContext {
+  const group = new THREE.Group();
+  scene.add(group);
+  const nodeGeometry = new THREE.SphereGeometry(0.11, 18, 12);
+  const nodes: THREE.Mesh[] = [];
+  const nodeMaterials: THREE.MeshStandardMaterial[] = [];
+  for (let index = 0; index < 12; index += 1) {
+    const material = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(index / 12, 0.78, 0.34),
+      emissive: new THREE.Color().setHSL(index / 12, 0.7, 0.08),
+      emissiveIntensity: 0.4,
+      metalness: 0.14,
+      roughness: 0.42,
+      transparent: true,
+      opacity: layer.controls.opacity
+    });
+    const mesh = new THREE.Mesh(nodeGeometry, material);
+    const angle = (index / 12) * Math.PI * 2 - Math.PI / 2;
+    mesh.position.set(Math.cos(angle) * 2.2, Math.sin(angle) * 2.2, 0);
+    nodes.push(mesh);
+    nodeMaterials.push(material);
+    group.add(mesh);
+  }
+
+  const linePositions = new Float32Array(12 * 2 * 3);
+  const lineColors = new Float32Array(12 * 2 * 3);
+  const lineGeometry = new THREE.BufferGeometry();
+  lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+  lineGeometry.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
+  const lineMaterial = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: layer.controls.opacity * 0.72,
+    blending: THREE.AdditiveBlending
+  });
+  const lines = new THREE.LineSegments(lineGeometry, lineMaterial);
+  group.add(lines);
+
+  const particleGeometry = new THREE.BufferGeometry();
+  const particlePositions = new Float32Array(240 * 3);
+  const particleColors = new Float32Array(240 * 3);
+  particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+  particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+  const particleMaterial = new THREE.PointsMaterial({
+    size: 0.038,
+    vertexColors: true,
+    transparent: true,
+    opacity: layer.controls.opacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const particlePoints = new THREE.Points(particleGeometry, particleMaterial);
+  group.add(particlePoints);
+
+  return {
+    id: layer.id,
+    mode: layer.mode,
+    type: 'chromaConstellation3d',
+    group,
+    nodes,
+    nodeMaterials,
+    lineGeometry,
+    lineMaterial,
+    lines,
+    linePositions,
+    lineColors,
+    particles: [],
+    particleGeometry,
+    particleMaterial,
+    particlePositions,
+    particleColors,
+    smoothed: createEmptyFrame(),
+    dispose: () => {
+      scene.remove(group);
+      nodeGeometry.dispose();
+      nodeMaterials.forEach((material) => material.dispose());
+      lineGeometry.dispose();
+      lineMaterial.dispose();
+      particleGeometry.dispose();
+      particleMaterial.dispose();
+    }
+  };
+}
+
 function resizeCanvasLayer(layer: TwoDLayerContext, width: number, height: number) {
   const ratio = Math.min(window.devicePixelRatio, 2);
   const canvasWidth = Math.max(1, Math.floor(width * ratio));
@@ -515,7 +627,13 @@ function getLayerFrame(context: LayerContext, layer: VisualLayer, features: Audi
     mid: clamp01(features.mid * sensitivity * gateMultiplier),
     high: clamp01(features.high * sensitivity * gateMultiplier),
     spectralCentroid: clamp01(features.spectralCentroid * (0.6 + sensitivity * 0.4)),
-    onset: clamp01(features.onset * sensitivity * gateMultiplier),
+    spectralFlux: clamp01(features.spectralFlux * sensitivity * gateMultiplier),
+    brightness: clamp01(features.brightness * sensitivity * gateMultiplier),
+    noisiness: clamp01(features.noisiness * sensitivity * gateMultiplier),
+    attack: clamp01(features.attack * sensitivity * gateMultiplier),
+    vibratoDepth: clamp01(features.vibratoDepth * sensitivity * gateMultiplier),
+    vibratoRate: clamp01(features.vibratoRate * sensitivity * gateMultiplier),
+    onset: clamp01(Math.max(features.onset, features.spectralFlux) * sensitivity * gateMultiplier),
     noteStability: features.noteStability,
     gateOpen,
     hue: getFeatureHue(features)
@@ -528,6 +646,12 @@ function getLayerFrame(context: LayerContext, layer: VisualLayer, features: Audi
   context.smoothed.mid += (target.mid - context.smoothed.mid) * amount;
   context.smoothed.high += (target.high - context.smoothed.high) * amount;
   context.smoothed.spectralCentroid += (target.spectralCentroid - context.smoothed.spectralCentroid) * amount;
+  context.smoothed.spectralFlux += (target.spectralFlux - context.smoothed.spectralFlux) * amount;
+  context.smoothed.brightness += (target.brightness - context.smoothed.brightness) * amount;
+  context.smoothed.noisiness += (target.noisiness - context.smoothed.noisiness) * amount;
+  context.smoothed.attack += (target.attack - context.smoothed.attack) * amount;
+  context.smoothed.vibratoDepth += (target.vibratoDepth - context.smoothed.vibratoDepth) * amount;
+  context.smoothed.vibratoRate += (target.vibratoRate - context.smoothed.vibratoRate) * amount;
   context.smoothed.onset += (target.onset - context.smoothed.onset) * amount;
   context.smoothed.noteStability += (target.noteStability - context.smoothed.noteStability) * amount;
   context.smoothed.hue = lerpHue(context.smoothed.hue, target.hue, amount);
@@ -691,6 +815,166 @@ function renderSpectralFieldLayer(context: SpectralLayerContext, layer: VisualLa
   context.geometry.attributes.color.needsUpdate = true;
 }
 
+function renderChromaConstellationLayer(
+  context: ChromaLayerContext,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  dt: number,
+  now: number,
+  index: number
+) {
+  context.group.visible = layer.enabled && layer.controls.opacity > 0;
+  context.lineMaterial.opacity = layer.controls.opacity * (0.28 + features.chordConfidence * 0.58);
+  context.particleMaterial.opacity = layer.controls.opacity;
+  if (!context.group.visible) {
+    return;
+  }
+
+  const chordClasses = getChordPitchClasses(features);
+  const chordSet = new Set(chordClasses);
+  const color = new THREE.Color();
+  const qualityScale = getChordQualityScale(features.chordQuality);
+  context.group.position.set((index - 1) * 0.34, 0, -0.2 - index * 0.06);
+  context.group.rotation.z += dt * (0.08 + frame.vibratoRate * 0.8 + Math.abs(features.bendCents) / 480) * layer.controls.motionAmount;
+  context.group.rotation.x = Math.sin(now * 0.00022 + index) * 0.16 * layer.controls.motionAmount;
+  context.group.scale.setScalar((0.92 + frame.rms * 0.34) * qualityScale);
+
+  context.nodes.forEach((node, pitchClass) => {
+    const chroma = clamp01(features.chroma[pitchClass] ?? 0);
+    const active = chroma > 0.18;
+    const inChord = chordSet.has(pitchClass);
+    const angle = (pitchClass / 12) * Math.PI * 2 - Math.PI / 2;
+    const radius = 2.0 + chroma * 0.55 * layer.controls.scaleAmount + (inChord ? 0.18 : 0);
+    const z = Math.sin(now * 0.0016 + pitchClass) * frame.vibratoDepth * 0.18 + chroma * frame.brightness * 0.55;
+    node.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, z);
+    node.scale.setScalar(0.72 + chroma * 2.2 + (inChord ? 0.55 : 0));
+    const material = context.nodeMaterials[pitchClass];
+    material.opacity = layer.controls.opacity * (active ? 1 : 0.42);
+    material.color.setHSL(wrap01(pitchClass / 12 + frame.hue * 0.08), 0.72 + frame.brightness * 0.18, 0.28 + chroma * 0.38 + (inChord ? 0.12 : 0));
+    material.emissive.setHSL(wrap01(pitchClass / 12 + frame.hue * 0.08), 0.74, 0.04 + chroma * 0.3 + (inChord ? 0.16 : 0));
+    material.emissiveIntensity = 0.35 + chroma * 1.8 + frame.attack * 0.8;
+  });
+
+  updateChordLines(context, chordClasses, features.chordConfidence, color);
+
+  if (frame.attack > 0.18 || frame.onset > 0.32) {
+    spawnChromaParticles(context, features.chroma, frame);
+  }
+  updateParticles(context.particles, context.particlePositions, context.particleColors, dt, frame);
+  context.particleGeometry.attributes.position.needsUpdate = true;
+  context.particleGeometry.attributes.color.needsUpdate = true;
+}
+
+function updateChordLines(context: ChromaLayerContext, chordClasses: number[], confidence: number, color: THREE.Color) {
+  let segment = 0;
+  const classes = chordClasses.length >= 2 ? chordClasses : [];
+  for (let index = 0; index < classes.length; index += 1) {
+    const from = context.nodes[classes[index]];
+    const to = context.nodes[classes[(index + 1) % classes.length]];
+    const offset = segment * 6;
+    context.linePositions[offset] = from.position.x;
+    context.linePositions[offset + 1] = from.position.y;
+    context.linePositions[offset + 2] = from.position.z;
+    context.linePositions[offset + 3] = to.position.x;
+    context.linePositions[offset + 4] = to.position.y;
+    context.linePositions[offset + 5] = to.position.z;
+    color.setHSL(classes[index] / 12, 0.82, 0.42 + confidence * 0.26);
+    context.lineColors[offset] = color.r;
+    context.lineColors[offset + 1] = color.g;
+    context.lineColors[offset + 2] = color.b;
+    context.lineColors[offset + 3] = color.r;
+    context.lineColors[offset + 4] = color.g;
+    context.lineColors[offset + 5] = color.b;
+    segment += 1;
+  }
+
+  for (let index = segment * 6; index < context.linePositions.length; index += 6) {
+    context.linePositions[index] = 999;
+    context.linePositions[index + 1] = 999;
+    context.linePositions[index + 2] = 999;
+    context.linePositions[index + 3] = 999;
+    context.linePositions[index + 4] = 999;
+    context.linePositions[index + 5] = 999;
+  }
+  context.lineGeometry.attributes.position.needsUpdate = true;
+  context.lineGeometry.attributes.color.needsUpdate = true;
+}
+
+function spawnChromaParticles(context: ChromaLayerContext, chroma: number[], frame: LayerFrame) {
+  const maxParticles = context.particlePositions.length / 3;
+  chroma.forEach((value, pitchClass) => {
+    if (value < 0.22) {
+      return;
+    }
+    const count = Math.min(5, Math.ceil(value * (1 + frame.attack * 5)));
+    const source = context.nodes[pitchClass].position;
+    for (let i = 0; i < count; i += 1) {
+      if (context.particles.length >= maxParticles) {
+        context.particles.shift();
+      }
+      const angle = (pitchClass / 12) * Math.PI * 2 + (Math.random() - 0.5) * 0.8;
+      const speed = 0.45 + value * 1.6 + frame.attack * 2.2;
+      context.particles.push({
+        position: source.clone(),
+        velocity: new THREE.Vector3(Math.cos(angle) * speed, Math.sin(angle) * speed, (Math.random() - 0.5) * speed),
+        life: 0.55 + Math.random() * 0.7,
+        hue: pitchClass / 12
+      });
+    }
+  });
+}
+
+function getChordPitchClasses(features: AudioFeatures): number[] {
+  const root = pitchClassFromName(features.chordRoot);
+  if (root === null || !features.chordQuality || features.chordQuality === 'unknown' || features.chordConfidence < 0.2) {
+    return [];
+  }
+  const intervals: Record<string, number[]> = {
+    major: [0, 4, 7],
+    minor: [0, 3, 7],
+    power: [0, 7],
+    sus2: [0, 2, 7],
+    sus4: [0, 5, 7]
+  };
+  return (intervals[features.chordQuality] ?? []).map((interval) => (root + interval) % 12);
+}
+
+function pitchClassFromName(note: string | null): number | null {
+  if (!note) {
+    return null;
+  }
+  const names: Record<string, number> = {
+    C: 0,
+    'C#': 1,
+    D: 2,
+    'D#': 3,
+    E: 4,
+    F: 5,
+    'F#': 6,
+    G: 7,
+    'G#': 8,
+    A: 9,
+    'A#': 10,
+    B: 11
+  };
+  return names[note] ?? null;
+}
+
+function getChordQualityScale(quality: AudioFeatures['chordQuality']): number {
+  switch (quality) {
+    case 'minor':
+      return 0.94;
+    case 'power':
+      return 1.08;
+    case 'sus2':
+    case 'sus4':
+      return 1.03;
+    default:
+      return 1;
+  }
+}
+
 function createRenderer(): THREE.WebGLRenderer {
   return new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true });
 }
@@ -779,6 +1063,12 @@ function createEmptyFrame(): LayerFrame {
     mid: 0,
     high: 0,
     spectralCentroid: 0,
+    spectralFlux: 0,
+    brightness: 0,
+    noisiness: 0,
+    attack: 0,
+    vibratoDepth: 0,
+    vibratoRate: 0,
     onset: 0,
     noteStability: 0,
     gateOpen: false,

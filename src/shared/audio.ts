@@ -41,7 +41,26 @@ export type AudioFeatures = {
   onset: number;
   gate: boolean;
   clipping: boolean;
+  chroma: number[];
+  spectralFlux: number;
+  spectralRolloff: number;
+  spectralFlatness: number;
+  zeroCrossingRate: number;
+  brightness: number;
+  noisiness: number;
+  attack: number;
+  decay: number;
+  bendCents: number;
+  vibratoDepth: number;
+  vibratoRate: number;
+  harmonicDensity: number;
+  chordRoot: string | null;
+  chordQuality: ChordQuality;
+  chordName: string | null;
+  chordConfidence: number;
 };
+
+export type ChordQuality = 'major' | 'minor' | 'power' | 'sus2' | 'sus4' | 'unknown' | null;
 
 export type AudioStatus = {
   running: boolean;
@@ -52,7 +71,7 @@ export type AudioStatus = {
 
 export type VisualLayerKind = '2d' | '3d';
 
-export type VisualLayerMode = 'trails2d' | 'lineArt2d' | 'forms3d' | 'spectralField3d';
+export type VisualLayerMode = 'trails2d' | 'lineArt2d' | 'forms3d' | 'spectralField3d' | 'chromaConstellation3d';
 
 export type VisualLayerControls = {
   sensitivity: number;
@@ -105,7 +124,24 @@ export const DEFAULT_FEATURES: AudioFeatures = {
   noteStability: 0,
   onset: 0,
   gate: false,
-  clipping: false
+  clipping: false,
+  chroma: Array.from({ length: 12 }, () => 0),
+  spectralFlux: 0,
+  spectralRolloff: 0,
+  spectralFlatness: 0,
+  zeroCrossingRate: 0,
+  brightness: 0,
+  noisiness: 0,
+  attack: 0,
+  decay: 0,
+  bendCents: 0,
+  vibratoDepth: 0,
+  vibratoRate: 0,
+  harmonicDensity: 0,
+  chordRoot: null,
+  chordQuality: null,
+  chordName: null,
+  chordConfidence: 0
 };
 
 export const DEFAULT_START_CONFIG: AudioStartConfig = {

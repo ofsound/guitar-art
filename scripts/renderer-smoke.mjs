@@ -33,6 +33,8 @@ try {
         getLatestFeatures: async () => {
           const t = performance.now() / 1000;
           const rms = 0.2 + Math.sin(t * 2.1) * 0.12;
+          const pitchClass = Math.floor(t) % 12;
+          const chroma = Array.from({ length: 12 }, (_, index) => (index === pitchClass ? 1 : index === (pitchClass + 7) % 12 ? 0.72 : 0.04));
           return {
             t,
             rms,
@@ -47,7 +49,24 @@ try {
             noteStability: 0.7,
             onset: Math.sin(t * 6) > 0.92 ? 0.9 : 0.05,
             gate: true,
-            clipping: false
+            clipping: false,
+            chroma,
+            spectralFlux: Math.sin(t * 6) > 0.92 ? 0.8 : 0.08,
+            spectralRolloff: 0.54,
+            spectralFlatness: 0.18,
+            zeroCrossingRate: 0.22,
+            brightness: 0.48,
+            noisiness: 0.2,
+            attack: Math.sin(t * 6) > 0.92 ? 0.85 : 0.04,
+            decay: 0.08,
+            bendCents: Math.sin(t * 2) * 22,
+            vibratoDepth: 0.28,
+            vibratoRate: 0.52,
+            harmonicDensity: 0.44,
+            chordRoot: 'E',
+            chordQuality: 'power',
+            chordName: 'E5',
+            chordConfidence: 0.74
           };
         },
         onStatus: () => () => undefined

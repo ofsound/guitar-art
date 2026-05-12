@@ -35,6 +35,23 @@ export interface AudioFeatures {
   onset: number
   gate: boolean
   clipping: boolean
+  chroma: Array<number>
+  spectralFlux: number
+  spectralRolloff: number
+  spectralFlatness: number
+  zeroCrossingRate: number
+  brightness: number
+  noisiness: number
+  attack: number
+  decay: number
+  bendCents: number
+  vibratoDepth: number
+  vibratoRate: number
+  harmonicDensity: number
+  chordRoot?: string
+  chordQuality?: string
+  chordName?: string
+  chordConfidence: number
 }
 
 export interface AudioParamsUpdate {

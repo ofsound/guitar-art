@@ -20,6 +20,12 @@ const NOTE_SEQUENCE = [
   { noteName: 'B3', pitchHz: 246.94 },
   { noteName: 'E4', pitchHz: 329.63 }
 ];
+const SIM_CHORDS = [
+  { root: 'E', quality: 'power' as const, name: 'E5', classes: [4, 11] },
+  { root: 'G', quality: 'major' as const, name: 'G', classes: [7, 11, 2] },
+  { root: 'A', quality: 'minor' as const, name: 'Am', classes: [9, 0, 4] },
+  { root: 'D', quality: 'sus4' as const, name: 'Dsus4', classes: [2, 7, 9] }
+];
 
 type SimulatorParams = Pick<AudioStartConfig, 'inputGain' | 'gateThreshold'>;
 
@@ -143,8 +149,12 @@ function normalizeFeatures(features: Partial<AudioFeatures>): AudioFeatures {
   return {
     ...DEFAULT_FEATURES,
     ...features,
+    chroma: normalizeChroma(features.chroma),
     pitchHz: features.pitchHz ?? null,
-    noteName: features.noteName ?? null
+    noteName: features.noteName ?? null,
+    chordRoot: features.chordRoot ?? null,
+    chordQuality: features.chordQuality ?? null,
+    chordName: features.chordName ?? null
   };
 }
 
@@ -182,15 +192,23 @@ function makeSimulatorFeatures(t: number, params: SimulatorParams): AudioFeature
   const noisyStrum = phrase > 12.5 && phrase < 15.2 ? 0.42 + 0.28 * noise(t * 6.1) : 0;
   const sustained = phrase > 1.0 && phrase < 5.2 ? 0.5 + 0.2 * Math.sin(t * 2.3) : 0;
   const bend = phrase > 9.2 && phrase < 12.2 ? (phrase - 9.2) / 3 : 0;
+  const vibrato = phrase > 9.6 && phrase < 12.8 ? Math.sin(t * 32) : 0;
   const silence = phrase > 15.2;
   const rawRms = silence ? 0.004 : clamp01(0.08 + sustained + mutedRun * 0.5 + noisyStrum + attackPulse * 0.8);
   const rms = clamp01(rawRms * params.inputGain);
   const high = clamp01(noisyStrum * 0.95 + attackPulse * 0.55 + 0.08 * Math.sin(t * 17) ** 2);
   const mid = clamp01(sustained * 0.8 + mutedRun * 0.35 + attackPulse * 0.35);
   const low = clamp01(rms * 0.5 + Math.max(0, Math.sin(t * 1.7)) * 0.18);
-  const pitchHz = note.pitchHz * (1 + bend * 0.18 + Math.sin(t * 5.8) * 0.004);
+  const pitchHz = note.pitchHz * (1 + bend * 0.18 + vibrato * 0.012 + Math.sin(t * 5.8) * 0.004);
   const confidence = silence || noisyStrum > 0.5 ? 0.18 : clamp01(0.62 + sustained * 0.36 - mutedRun * 0.25);
   const gate = rms > params.gateThreshold;
+  const chord = phrase < 15.2 ? SIM_CHORDS[Math.floor(t * 0.18) % SIM_CHORDS.length] : null;
+  const chroma = makeSimulatorChroma(note.pitchHz, chord, gate);
+  const spectralFlux = clamp01(attackPulse * 0.9 + mutedRun * 0.24 + noisyStrum * 0.34);
+  const spectralFlatness = clamp01(noisyStrum * 0.65 + mutedRun * 0.22 + high * 0.12);
+  const zeroCrossingRate = clamp01(high * 0.55 + noisyStrum * 0.42);
+  const brightness = clamp01(high * 0.82 + spectralFlatness * 0.24);
+  const harmonicDensity = chord ? clamp01(0.35 + chord.classes.length * 0.11 + mid * 0.18) : 0;
 
   return {
     t,
@@ -204,9 +222,26 @@ function makeSimulatorFeatures(t: number, params: SimulatorParams): AudioFeature
     pitchConfidence: confidence,
     noteName: gate ? note.noteName : null,
     noteStability: clamp01(confidence * (1 - noisyStrum) * (sustained > 0 ? 1 : 0.55)),
-    onset: clamp01(attackPulse + Math.max(0, Math.sin(t * 22)) * mutedRun * 0.18),
+    onset: clamp01(Math.max(attackPulse + Math.max(0, Math.sin(t * 22)) * mutedRun * 0.18, spectralFlux)),
     gate,
-    clipping: rms > 0.92
+    clipping: rms > 0.92,
+    chroma,
+    spectralFlux,
+    spectralRolloff: clamp01(0.18 + high * 0.65 + noisyStrum * 0.14),
+    spectralFlatness,
+    zeroCrossingRate,
+    brightness,
+    noisiness: clamp01(spectralFlatness * 0.72 + zeroCrossingRate * 0.28),
+    attack: clamp01(attackPulse + spectralFlux * 0.5),
+    decay: phrase > 5.2 && phrase < 6.2 ? clamp01((phrase - 5.2) * 0.65) : silence ? 0.35 : 0,
+    bendCents: bend * 180 + vibrato * 18,
+    vibratoDepth: Math.abs(vibrato) > 0.1 ? 0.36 : 0,
+    vibratoRate: Math.abs(vibrato) > 0.1 ? 0.62 : 0,
+    harmonicDensity,
+    chordRoot: gate && chord ? chord.root : null,
+    chordQuality: gate && chord ? chord.quality : null,
+    chordName: gate && chord ? chord.name : null,
+    chordConfidence: gate && chord ? clamp01(0.58 + mid * 0.28 - noisyStrum * 0.22) : 0
   };
 }
 
@@ -227,6 +262,37 @@ function applyParams(current: SimulatorParams, update: AudioParamsUpdate): Simul
 
 function validParam(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeChroma(chroma: number[] | undefined): number[] {
+  if (!Array.isArray(chroma)) {
+    return [...DEFAULT_FEATURES.chroma];
+  }
+  return Array.from({ length: 12 }, (_, index) => clamp01(Number(chroma[index]) || 0));
+}
+
+function makeSimulatorChroma(
+  pitchHz: number,
+  chord: (typeof SIM_CHORDS)[number] | null,
+  gate: boolean
+): number[] {
+  const chroma = Array.from({ length: 12 }, () => 0.02);
+  if (!gate) {
+    return chroma.map(() => 0);
+  }
+  if (chord) {
+    chord.classes.forEach((pitchClass, index) => {
+      chroma[pitchClass] = index === 0 ? 1 : 0.76;
+    });
+  }
+  const noteClass = pitchClassFromHz(pitchHz);
+  chroma[noteClass] = Math.max(chroma[noteClass], 0.88);
+  return chroma;
+}
+
+function pitchClassFromHz(freq: number): number {
+  const midi = Math.round(69 + 12 * Math.log2(freq / 440));
+  return ((midi % 12) + 12) % 12;
 }
 
 function noise(x: number): number {

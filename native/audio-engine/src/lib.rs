@@ -13,8 +13,12 @@ use napi_derive::napi;
 use rtrb::{Consumer, Producer, RingBuffer};
 use rustfft::{num_complex::Complex, FftPlanner};
 
-const FFT_SIZE: usize = 2048;
+const FFT_SIZE: usize = 4096;
 const SAMPLE_QUEUE_CAPACITY: usize = 48_000;
+const CHROMA_BINS: usize = 12;
+const NOTE_NAMES: [&str; CHROMA_BINS] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 #[napi(object)]
 #[derive(Clone, Debug)]
@@ -65,6 +69,23 @@ pub struct AudioFeatures {
     pub onset: f64,
     pub gate: bool,
     pub clipping: bool,
+    pub chroma: Vec<f64>,
+    pub spectral_flux: f64,
+    pub spectral_rolloff: f64,
+    pub spectral_flatness: f64,
+    pub zero_crossing_rate: f64,
+    pub brightness: f64,
+    pub noisiness: f64,
+    pub attack: f64,
+    pub decay: f64,
+    pub bend_cents: f64,
+    pub vibrato_depth: f64,
+    pub vibrato_rate: f64,
+    pub harmonic_density: f64,
+    pub chord_root: Option<String>,
+    pub chord_quality: Option<String>,
+    pub chord_name: Option<String>,
+    pub chord_confidence: f64,
 }
 
 impl Default for AudioFeatures {
@@ -84,6 +105,23 @@ impl Default for AudioFeatures {
             onset: 0.0,
             gate: false,
             clipping: false,
+            chroma: vec![0.0; CHROMA_BINS],
+            spectral_flux: 0.0,
+            spectral_rolloff: 0.0,
+            spectral_flatness: 0.0,
+            zero_crossing_rate: 0.0,
+            brightness: 0.0,
+            noisiness: 0.0,
+            attack: 0.0,
+            decay: 0.0,
+            bend_cents: 0.0,
+            vibrato_depth: 0.0,
+            vibrato_rate: 0.0,
+            harmonic_density: 0.0,
+            chord_root: None,
+            chord_quality: None,
+            chord_name: None,
+            chord_confidence: 0.0,
         }
     }
 }
@@ -383,6 +421,8 @@ fn run_dsp(
     let mut last_rms = 0.0_f32;
     let mut stable_pitch = None::<f32>;
     let mut note_stability = 0.0_f32;
+    let mut previous_magnitudes = vec![0.0_f32; FFT_SIZE / 2];
+    let mut pitch_history = VecDeque::<(f64, f32)>::with_capacity(80);
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(FFT_SIZE);
     let mut fft_buffer = vec![Complex::new(0.0, 0.0); FFT_SIZE];
@@ -397,6 +437,7 @@ fn run_dsp(
 
         if window.len() == FFT_SIZE && last_publish.elapsed() >= feature_interval {
             let samples = window.make_contiguous();
+            let elapsed = started.elapsed().as_secs_f64();
             let mut features = analyze_window(
                 samples,
                 sample_rate,
@@ -404,10 +445,13 @@ fn run_dsp(
                 last_rms,
                 stable_pitch,
                 note_stability,
+                elapsed,
+                &mut previous_magnitudes,
+                &mut pitch_history,
                 &fft,
                 &mut fft_buffer,
             );
-            features.t = started.elapsed().as_secs_f64();
+            features.t = elapsed;
             last_rms = features.rms as f32;
             stable_pitch = features.pitch_hz.map(|pitch| pitch as f32);
             note_stability = features.note_stability as f32;
@@ -426,6 +470,9 @@ fn analyze_window(
     previous_rms: f32,
     previous_pitch: Option<f32>,
     previous_stability: f32,
+    now_secs: f64,
+    previous_magnitudes: &mut [f32],
+    pitch_history: &mut VecDeque<(f64, f32)>,
     fft: &Arc<dyn rustfft::Fft<f32>>,
     fft_buffer: &mut [Complex<f32>],
 ) -> AudioFeatures {
@@ -433,15 +480,30 @@ fn analyze_window(
     let peak = peak(samples);
     let clipping = peak > 0.98;
     let gate = rms > gate_threshold;
-    let onset = ((rms - previous_rms).max(0.0) * 8.0).clamp(0.0, 1.0);
-    let (low, mid, high, spectral_centroid) =
-        spectral_features(samples, sample_rate, fft, fft_buffer);
+    let spectral = spectral_features(samples, sample_rate, fft, fft_buffer);
+    let spectral_flux = spectral_flux(&spectral.magnitudes, previous_magnitudes);
+    previous_magnitudes.copy_from_slice(&spectral.magnitudes);
+    let rms_onset = ((rms - previous_rms).max(0.0) * 8.0).clamp(0.0, 1.0);
+    let onset = rms_onset.max(spectral_flux);
+    let attack = ((rms - previous_rms).max(0.0) * 10.0 + spectral_flux * 0.7).clamp(0.0, 1.0);
+    let decay = ((previous_rms - rms).max(0.0) * 7.0).clamp(0.0, 1.0);
+    let zero_crossing_rate = zero_crossing_rate(samples);
     let (pitch_hz, confidence) = detect_pitch_mpm(samples, sample_rate);
     let pitch_hz = if gate && confidence > 0.22 {
         pitch_hz
     } else {
         None
     };
+    update_pitch_history(pitch_history, now_secs, pitch_hz, confidence);
+    let (bend_cents, vibrato_depth, vibrato_rate) =
+        pitch_motion(pitch_history, pitch_hz, confidence);
+    let mut chroma = spectral.chroma;
+    if let Some(pitch) = pitch_hz.filter(|_| spectral.harmonic_density < 0.75) {
+        let pitch_class = pitch_class_from_freq(pitch);
+        chroma[pitch_class] += confidence * 1.3;
+        normalize_chroma(&mut chroma);
+    }
+    let harmonic_density = harmonic_density(&chroma);
     let note_name = pitch_hz.map(note_name);
     let note_stability = match (previous_pitch, pitch_hz) {
         (Some(prev), Some(next)) => {
@@ -452,15 +514,16 @@ fn analyze_window(
         (_, Some(_)) => (previous_stability * 0.92 + confidence * 0.08).clamp(0.0, 1.0),
         _ => previous_stability * 0.88,
     };
+    let chord = detect_chord(&chroma, harmonic_density);
 
     AudioFeatures {
         t: 0.0,
         rms: rms as f64,
         peak: peak as f64,
-        low: low as f64,
-        mid: mid as f64,
-        high: high as f64,
-        spectral_centroid: spectral_centroid as f64,
+        low: spectral.low as f64,
+        mid: spectral.mid as f64,
+        high: spectral.high as f64,
+        spectral_centroid: spectral.centroid as f64,
         pitch_hz: pitch_hz.map(|pitch| pitch as f64),
         pitch_confidence: confidence as f64,
         note_name,
@@ -468,6 +531,23 @@ fn analyze_window(
         onset: onset as f64,
         gate,
         clipping,
+        chroma: chroma.iter().map(|value| *value as f64).collect(),
+        spectral_flux: spectral_flux as f64,
+        spectral_rolloff: spectral.rolloff as f64,
+        spectral_flatness: spectral.flatness as f64,
+        zero_crossing_rate: zero_crossing_rate as f64,
+        brightness: spectral.brightness as f64,
+        noisiness: (spectral.flatness * 0.72 + zero_crossing_rate * 0.28).clamp(0.0, 1.0) as f64,
+        attack: attack as f64,
+        decay: decay as f64,
+        bend_cents: bend_cents as f64,
+        vibrato_depth: vibrato_depth as f64,
+        vibrato_rate: vibrato_rate as f64,
+        harmonic_density: harmonic_density as f64,
+        chord_root: chord.root,
+        chord_quality: chord.quality,
+        chord_name: chord.name,
+        chord_confidence: chord.confidence as f64,
     }
 }
 
@@ -482,12 +562,25 @@ fn peak(samples: &[f32]) -> f32 {
         .clamp(0.0, 1.5)
 }
 
+struct SpectralFrame {
+    low: f32,
+    mid: f32,
+    high: f32,
+    centroid: f32,
+    rolloff: f32,
+    flatness: f32,
+    brightness: f32,
+    harmonic_density: f32,
+    chroma: [f32; CHROMA_BINS],
+    magnitudes: Vec<f32>,
+}
+
 fn spectral_features(
     samples: &[f32],
     sample_rate: f32,
     fft: &Arc<dyn rustfft::Fft<f32>>,
     fft_buffer: &mut [Complex<f32>],
-) -> (f32, f32, f32, f32) {
+) -> SpectralFrame {
     for (index, slot) in fft_buffer.iter_mut().enumerate() {
         let sample = samples.get(index).copied().unwrap_or(0.0);
         let hann = 0.5 - 0.5 * ((2.0 * PI * index as f32) / (FFT_SIZE - 1) as f32).cos();
@@ -501,10 +594,14 @@ fn spectral_features(
     let mut high = 0.0;
     let mut weighted = 0.0;
     let mut total = 0.0;
+    let mut bright = 0.0;
+    let mut chroma = [0.0_f32; CHROMA_BINS];
+    let mut magnitudes = vec![0.0_f32; FFT_SIZE / 2];
 
     for (index, value) in fft_buffer.iter().take(FFT_SIZE / 2).enumerate().skip(1) {
         let freq = index as f32 * sample_rate / FFT_SIZE as f32;
         let mag = value.norm();
+        magnitudes[index] = mag;
         total += mag;
         weighted += mag * freq;
         if freq < 220.0 {
@@ -514,6 +611,18 @@ fn spectral_features(
         } else if freq < 8000.0 {
             high += mag;
         }
+        if freq >= 2000.0 && freq < 8000.0 {
+            bright += mag;
+        }
+        if (70.0..=5000.0).contains(&freq) {
+            let midi = 69.0 + 12.0 * (freq / 440.0).log2();
+            let damping = 1.0 / (1.0 + freq / 3500.0);
+            for (pitch_class, slot) in chroma.iter_mut().enumerate() {
+                let distance = pitch_class_distance(midi, pitch_class);
+                let weight = (-((distance * distance) / (2.0 * 0.72 * 0.72))).exp();
+                *slot += mag * damping * weight;
+            }
+        }
     }
 
     let scale = (low + mid + high).max(0.0001);
@@ -522,12 +631,190 @@ fn spectral_features(
     } else {
         0.0
     };
-    (
-        (low / scale).clamp(0.0, 1.0),
-        (mid / scale).clamp(0.0, 1.0),
-        (high / scale).clamp(0.0, 1.0),
-        (centroid_hz / 5000.0).clamp(0.0, 1.0),
-    )
+    let rolloff_hz = rolloff_hz(&magnitudes, sample_rate, total * 0.85);
+    let flatness = spectral_flatness(&magnitudes);
+    normalize_chroma(&mut chroma);
+    let harmonic_density = harmonic_density(&chroma);
+
+    SpectralFrame {
+        low: (low / scale).clamp(0.0, 1.0),
+        mid: (mid / scale).clamp(0.0, 1.0),
+        high: (high / scale).clamp(0.0, 1.0),
+        centroid: (centroid_hz / 5000.0).clamp(0.0, 1.0),
+        rolloff: (rolloff_hz / 8000.0).clamp(0.0, 1.0),
+        flatness,
+        brightness: (bright / scale).clamp(0.0, 1.0),
+        harmonic_density,
+        chroma,
+        magnitudes,
+    }
+}
+
+fn pitch_class_distance(midi: f32, pitch_class: usize) -> f32 {
+    let class = midi.rem_euclid(CHROMA_BINS as f32);
+    let direct = (class - pitch_class as f32).abs();
+    direct.min(CHROMA_BINS as f32 - direct)
+}
+
+fn spectral_flux(current: &[f32], previous: &[f32]) -> f32 {
+    let mut positive_delta = 0.0;
+    let mut total = 0.0;
+    for (next, prev) in current.iter().zip(previous.iter()) {
+        positive_delta += (next - prev).max(0.0);
+        total += *next;
+    }
+    (positive_delta / total.max(0.0001) * 1.8).clamp(0.0, 1.0)
+}
+
+fn rolloff_hz(magnitudes: &[f32], sample_rate: f32, threshold: f32) -> f32 {
+    let mut cumulative = 0.0;
+    for (index, mag) in magnitudes.iter().enumerate().skip(1) {
+        cumulative += *mag;
+        if cumulative >= threshold {
+            return index as f32 * sample_rate / FFT_SIZE as f32;
+        }
+    }
+    0.0
+}
+
+fn spectral_flatness(magnitudes: &[f32]) -> f32 {
+    let mut count = 0.0;
+    let mut log_sum = 0.0;
+    let mut sum = 0.0;
+    for mag in magnitudes.iter().skip(1) {
+        let value = *mag + 0.000001;
+        log_sum += value.ln();
+        sum += value;
+        count += 1.0;
+    }
+    if count == 0.0 || sum <= 0.000001 {
+        return 0.0;
+    }
+    let geometric = (log_sum / count).exp();
+    let arithmetic = sum / count;
+    (geometric / arithmetic.max(0.000001)).clamp(0.0, 1.0)
+}
+
+fn normalize_chroma(chroma: &mut [f32; CHROMA_BINS]) {
+    let max = chroma.iter().copied().fold(0.0_f32, f32::max);
+    if max <= 0.0001 {
+        return;
+    }
+    for value in chroma.iter_mut() {
+        *value = (*value / max).clamp(0.0, 1.0);
+    }
+}
+
+fn harmonic_density(chroma: &[f32; CHROMA_BINS]) -> f32 {
+    let active = chroma.iter().filter(|value| **value > 0.22).count() as f32;
+    let energy = chroma.iter().sum::<f32>() / CHROMA_BINS as f32;
+    ((active / 6.0) * 0.68 + energy * 0.32).clamp(0.0, 1.0)
+}
+
+fn zero_crossing_rate(samples: &[f32]) -> f32 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let crossings = samples
+        .windows(2)
+        .filter(|pair| (pair[0] >= 0.0 && pair[1] < 0.0) || (pair[0] < 0.0 && pair[1] >= 0.0))
+        .count();
+    (crossings as f32 / (samples.len() - 1) as f32 * 8.0).clamp(0.0, 1.0)
+}
+
+struct ChordEstimate {
+    root: Option<String>,
+    quality: Option<String>,
+    name: Option<String>,
+    confidence: f32,
+}
+
+fn detect_chord(chroma: &[f32; CHROMA_BINS], harmonic_density: f32) -> ChordEstimate {
+    let templates: [(&str, &[(usize, f32)]); 5] = [
+        ("major", &[(0, 1.0), (4, 0.82), (7, 0.92)]),
+        ("minor", &[(0, 1.0), (3, 0.82), (7, 0.92)]),
+        ("power", &[(0, 1.0), (7, 0.95)]),
+        ("sus2", &[(0, 1.0), (2, 0.74), (7, 0.9)]),
+        ("sus4", &[(0, 1.0), (5, 0.74), (7, 0.9)]),
+    ];
+    let mut best_root = 0;
+    let mut best_quality = "";
+    let mut best_score = 0.0;
+    let mut next_score = 0.0;
+
+    for root in 0..CHROMA_BINS {
+        for (quality, intervals) in templates {
+            let score = chord_score(chroma, root, intervals);
+            if score > best_score {
+                next_score = best_score;
+                best_score = score;
+                best_root = root;
+                best_quality = quality;
+            } else if score > next_score {
+                next_score = score;
+            }
+        }
+    }
+
+    let confidence = (best_score * (0.82 + (best_score - next_score).max(0.0) * 0.36)).clamp(0.0, 1.0);
+    if confidence >= 0.48 {
+        let root = NOTE_NAMES[best_root].to_string();
+        let name = chord_name(&root, best_quality);
+        return ChordEstimate {
+            root: Some(root),
+            quality: Some(best_quality.to_string()),
+            name: Some(name),
+            confidence,
+        };
+    }
+
+    if harmonic_density > 0.34 {
+        return ChordEstimate {
+            root: None,
+            quality: Some("unknown".to_string()),
+            name: Some("Unknown".to_string()),
+            confidence: harmonic_density * 0.5,
+        };
+    }
+
+    ChordEstimate {
+        root: None,
+        quality: None,
+        name: None,
+        confidence: 0.0,
+    }
+}
+
+fn chord_score(chroma: &[f32; CHROMA_BINS], root: usize, intervals: &[(usize, f32)]) -> f32 {
+    let mut template = [0.0_f32; CHROMA_BINS];
+    for (interval, weight) in intervals {
+        template[(root + *interval) % CHROMA_BINS] = *weight;
+    }
+    let dot = chroma
+        .iter()
+        .zip(template.iter())
+        .map(|(a, b)| a * b)
+        .sum::<f32>();
+    let chroma_norm = chroma.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let template_norm = template.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let cosine = dot / (chroma_norm * template_norm).max(0.0001);
+    let active_bonus = intervals
+        .iter()
+        .map(|(interval, _)| chroma[(root + *interval) % CHROMA_BINS])
+        .sum::<f32>()
+        / intervals.len() as f32;
+    (cosine * 0.78 + active_bonus * 0.22).clamp(0.0, 1.0)
+}
+
+fn chord_name(root: &str, quality: &str) -> String {
+    match quality {
+        "major" => root.to_string(),
+        "minor" => format!("{root}m"),
+        "power" => format!("{root}5"),
+        "sus2" => format!("{root}sus2"),
+        "sus4" => format!("{root}sus4"),
+        _ => "Unknown".to_string(),
+    }
 }
 
 fn detect_pitch_mpm(samples: &[f32], sample_rate: f32) -> (Option<f32>, f32) {
@@ -539,18 +826,7 @@ fn detect_pitch_mpm(samples: &[f32], sample_rate: f32) -> (Option<f32>, f32) {
     let mut best = 0.0;
 
     for tau in min_tau..max_tau {
-        let mut acf = 0.0;
-        let mut divisor = 0.0;
-        for index in 0..(samples.len() - tau) {
-            acf += samples[index] * samples[index + tau];
-            divisor +=
-                samples[index] * samples[index] + samples[index + tau] * samples[index + tau];
-        }
-        let nsdf = if divisor > 0.0 {
-            2.0 * acf / divisor
-        } else {
-            0.0
-        };
+        let nsdf = nsdf_at_tau(samples, tau);
         if nsdf > best {
             best = nsdf;
             best_tau = tau;
@@ -561,16 +837,107 @@ fn detect_pitch_mpm(samples: &[f32], sample_rate: f32) -> (Option<f32>, f32) {
         return (None, best.max(0.0));
     }
 
-    let pitch = sample_rate / best_tau as f32;
+    let refined_tau = if best_tau > min_tau && best_tau + 1 < max_tau {
+        let left = nsdf_at_tau(samples, best_tau - 1);
+        let center = best;
+        let right = nsdf_at_tau(samples, best_tau + 1);
+        let denominator = left - 2.0 * center + right;
+        if denominator.abs() > 0.000001 {
+            best_tau as f32 + 0.5 * (left - right) / denominator
+        } else {
+            best_tau as f32
+        }
+    } else {
+        best_tau as f32
+    };
+    let pitch = sample_rate / refined_tau.max(1.0);
     (Some(pitch), best.clamp(0.0, 1.0))
+}
+
+fn nsdf_at_tau(samples: &[f32], tau: usize) -> f32 {
+    let mut acf = 0.0;
+    let mut divisor = 0.0;
+    for index in 0..(samples.len() - tau) {
+        acf += samples[index] * samples[index + tau];
+        divisor += samples[index] * samples[index] + samples[index + tau] * samples[index + tau];
+    }
+    if divisor > 0.0 {
+        2.0 * acf / divisor
+    } else {
+        0.0
+    }
+}
+
+fn update_pitch_history(
+    history: &mut VecDeque<(f64, f32)>,
+    now_secs: f64,
+    pitch_hz: Option<f32>,
+    confidence: f32,
+) {
+    while let Some((t, _)) = history.front() {
+        if now_secs - *t <= 0.5 {
+            break;
+        }
+        history.pop_front();
+    }
+
+    if let Some(pitch) = pitch_hz {
+        if confidence > 0.35 && pitch.is_finite() && pitch > 0.0 {
+            history.push_back((now_secs, pitch));
+        }
+    }
+}
+
+fn pitch_motion(
+    history: &VecDeque<(f64, f32)>,
+    pitch_hz: Option<f32>,
+    confidence: f32,
+) -> (f32, f32, f32) {
+    let Some(pitch) = pitch_hz else {
+        return (0.0, 0.0, 0.0);
+    };
+    if confidence <= 0.35 {
+        return (0.0, 0.0, 0.0);
+    }
+
+    let midi = 69.0 + 12.0 * (pitch / 440.0).log2();
+    let bend_cents = (midi - midi.round()) * 100.0;
+
+    if history.len() < 5 {
+        return (bend_cents, 0.0, 0.0);
+    }
+
+    let mean_midi = history
+        .iter()
+        .map(|(_, pitch)| 69.0 + 12.0 * (*pitch / 440.0).log2())
+        .sum::<f32>()
+        / history.len() as f32;
+    let cents: Vec<f32> = history
+        .iter()
+        .map(|(_, pitch)| (69.0 + 12.0 * (*pitch / 440.0).log2() - mean_midi) * 100.0)
+        .collect();
+    let min = cents.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = cents.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let vibrato_depth = ((max - min) / 80.0).clamp(0.0, 1.0);
+    let duration = (history.back().unwrap().0 - history.front().unwrap().0).max(0.001);
+    let crossings = cents
+        .windows(2)
+        .filter(|pair| (pair[0] >= 0.0 && pair[1] < 0.0) || (pair[0] < 0.0 && pair[1] >= 0.0))
+        .count();
+    let rate_hz = crossings as f64 / (duration * 2.0);
+    let vibrato_rate = (rate_hz as f32 / 9.0).clamp(0.0, 1.0) * if vibrato_depth > 0.08 { 1.0 } else { 0.0 };
+
+    (bend_cents, vibrato_depth, vibrato_rate)
+}
+
+fn pitch_class_from_freq(freq: f32) -> usize {
+    let midi = (69.0 + 12.0 * (freq / 440.0).log2()).round() as i32;
+    midi.rem_euclid(CHROMA_BINS as i32) as usize
 }
 
 fn note_name(freq: f32) -> String {
     let midi = (69.0 + 12.0 * (freq / 440.0).log2()).round() as i32;
-    let names = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    let name = names[midi.rem_euclid(12) as usize];
+    let name = NOTE_NAMES[pitch_class_from_freq(freq)];
     let octave = midi.div_euclid(12) - 1;
     format!("{name}{octave}")
 }
@@ -589,6 +956,9 @@ mod tests {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_SIZE);
         let mut fft_buffer = vec![Complex::new(0.0, 0.0); FFT_SIZE];
+        let mut previous_magnitudes =
+            spectral_features(samples, 48_000.0, &fft, &mut fft_buffer).magnitudes;
+        let mut pitch_history = VecDeque::new();
         analyze_window(
             samples,
             48_000.0,
@@ -596,9 +966,37 @@ mod tests {
             previous_rms,
             None,
             0.0,
+            0.5,
+            &mut previous_magnitudes,
+            &mut pitch_history,
             &fft,
             &mut fft_buffer,
         )
+    }
+
+    fn mix_sines(freqs: &[f32], sample_rate: f32, len: usize, amp: f32) -> Vec<f32> {
+        (0..len)
+            .map(|index| {
+                freqs
+                    .iter()
+                    .map(|freq| (2.0 * PI * *freq * index as f32 / sample_rate).sin())
+                    .sum::<f32>()
+                    * amp
+                    / freqs.len() as f32
+            })
+            .collect()
+    }
+
+    fn guitar_note(freq: f32) -> Vec<f32> {
+        (0..FFT_SIZE)
+            .map(|index| {
+                let t = index as f32 / 48_000.0;
+                ((2.0 * PI * freq * t).sin() * 0.58
+                    + (2.0 * PI * freq * 2.0 * t).sin() * 0.28
+                    + (2.0 * PI * freq * 3.0 * t).sin() * 0.14)
+                    * 0.8
+            })
+            .collect()
     }
 
     #[test]
@@ -649,5 +1047,92 @@ mod tests {
         let samples = sine(110.0, 48_000.0, FFT_SIZE, 0.8);
         assert!(analyze(&samples, 0.02).onset > 0.5);
         assert!(analyze(&samples, 0.56).onset < 0.1);
+    }
+
+    #[test]
+    fn chroma_peaks_for_guitar_notes() {
+        for (freq, expected_class) in [(82.41, 4), (110.0, 9), (146.83, 2), (196.0, 7)] {
+            let features = analyze(&guitar_note(freq), 0.0);
+            let peak_class = features
+                .chroma
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(index, _)| index)
+                .unwrap();
+            assert_eq!(peak_class, expected_class);
+        }
+    }
+
+    #[test]
+    fn chord_templates_classify_common_guitar_chords() {
+        let c_major = analyze(&mix_sines(&[261.63, 329.63, 392.0], 48_000.0, FFT_SIZE, 0.8), 0.0);
+        assert_eq!(c_major.chord_root.as_deref(), Some("C"));
+        assert_eq!(c_major.chord_quality.as_deref(), Some("major"));
+
+        let a_minor = analyze(&mix_sines(&[220.0, 261.63, 329.63], 48_000.0, FFT_SIZE, 0.8), 0.0);
+        assert_eq!(a_minor.chord_root.as_deref(), Some("A"));
+        assert_eq!(a_minor.chord_quality.as_deref(), Some("minor"));
+
+        let e_power = analyze(&mix_sines(&[82.41, 123.47], 48_000.0, FFT_SIZE, 0.8), 0.0);
+        assert_eq!(e_power.chord_root.as_deref(), Some("E"));
+        assert_eq!(e_power.chord_quality.as_deref(), Some("power"));
+    }
+
+    #[test]
+    fn spectral_flux_rises_on_spectral_change() {
+        let low = sine(110.0, 48_000.0, FFT_SIZE, 0.7);
+        let high = sine(2200.0, 48_000.0, FFT_SIZE, 0.7);
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let mut fft_buffer = vec![Complex::new(0.0, 0.0); FFT_SIZE];
+        let mut previous_magnitudes =
+            spectral_features(&low, 48_000.0, &fft, &mut fft_buffer).magnitudes;
+        let mut pitch_history = VecDeque::new();
+        let features = analyze_window(
+            &high,
+            48_000.0,
+            0.02,
+            rms(&high),
+            None,
+            0.0,
+            0.5,
+            &mut previous_magnitudes,
+            &mut pitch_history,
+            &fft,
+            &mut fft_buffer,
+        );
+        assert!(features.spectral_flux > 0.5);
+        assert!(features.onset > 0.5);
+    }
+
+    #[test]
+    fn texture_descriptors_separate_noise_and_brightness() {
+        let noise = (0..FFT_SIZE)
+            .map(|index| (((index * 17 + 23) % 97) as f32 / 48.5 - 1.0) * 0.4)
+            .collect::<Vec<_>>();
+        let sine_low = sine(110.0, 48_000.0, FFT_SIZE, 0.7);
+        let sine_high = sine(3200.0, 48_000.0, FFT_SIZE, 0.7);
+        let noise_features = analyze(&noise, 0.0);
+        let low_features = analyze(&sine_low, 0.0);
+        let high_features = analyze(&sine_high, 0.0);
+        assert!(noise_features.spectral_flatness > low_features.spectral_flatness);
+        assert!(noise_features.noisiness > low_features.noisiness);
+        assert!(high_features.spectral_rolloff > low_features.spectral_rolloff);
+        assert!(high_features.brightness > low_features.brightness);
+    }
+
+    #[test]
+    fn pitch_motion_detects_bends_and_vibrato() {
+        let mut history = VecDeque::new();
+        for i in 0..24 {
+            let t = i as f64 / 48.0;
+            let pitch = 220.0 * 2.0_f32.powf((30.0 * (t as f32 * 2.0 * PI * 5.0).sin()) / 1200.0);
+            update_pitch_history(&mut history, t, Some(pitch), 0.9);
+        }
+        let (bend_cents, vibrato_depth, vibrato_rate) = pitch_motion(&history, Some(226.45), 0.9);
+        assert!(bend_cents.abs() > 40.0);
+        assert!(vibrato_depth > 0.2);
+        assert!(vibrato_rate > 0.2);
     }
 }
