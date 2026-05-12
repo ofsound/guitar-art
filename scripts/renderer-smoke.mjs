@@ -66,7 +66,34 @@ try {
             chordRoot: 'E',
             chordQuality: 'power',
             chordName: 'E5',
-            chordConfidence: 0.74
+            chordConfidence: 0.74,
+            logSpectrum: Array.from({ length: 36 }, (_, index) => (index % 6) / 5),
+            spectralContrast: 0.42,
+            harmonicRatio: 0.68,
+            pickNoise: Math.max(0.08, Math.sin(t * 3.2) * 0.5 + 0.35),
+            muteAmount: Math.max(0.04, Math.cos(t * 2.4) * 0.38 + 0.28),
+            guitarTechnique: Math.sin(t * 1.3) > 0 ? 'strum' : 'vibrato',
+            guitarTechniqueConfidence: 0.78,
+            stringNumber: (Math.floor(t * 2) % 6) + 1,
+            fretNumber: Math.floor(t * 3) % 12,
+            voicing: [
+              { stringNumber: 6, fretNumber: 0, pitchClass: 4, confidence: 0.82 },
+              { stringNumber: 5, fretNumber: 2, pitchClass: 11, confidence: 0.7 },
+              { stringNumber: 4, fretNumber: 2, pitchClass: 4, confidence: 0.64 }
+            ],
+            guitarEvents: [
+              {
+                id: Math.floor(t * 3),
+                t: t - 0.08,
+                type: Math.sin(t * 2) > 0 ? 'strum' : 'pluck',
+                strength: 0.72,
+                noteName: 'E2',
+                pitchHz: 82.41,
+                stringNumber: 6,
+                fretNumber: 0,
+                chordName: 'E5'
+              }
+            ]
           };
         },
         onStatus: () => () => undefined
@@ -80,8 +107,15 @@ try {
     await page.waitForSelector('.tuner-panel .tuner-needle', { timeout: 10_000 });
     await page.waitForSelector('.record-panel', { timeout: 10_000 });
     await page.waitForSelector('.spectrum-bars', { timeout: 10_000 });
+    await page.locator('.layer-card').first().locator('select').selectOption('fretPulse2d');
+    await page.getByRole('button', { name: '+ 2D' }).click();
+    await page.locator('.layer-card').last().locator('select').selectOption('techniqueMap2d');
     await page.getByRole('button', { name: '+ 3D' }).click();
     await page.locator('.layer-card').last().locator('select').selectOption('guitarGlyph3d');
+    await page.getByRole('button', { name: '+ 3D' }).click();
+    await page.locator('.layer-card').last().locator('select').selectOption('stringResonator3d');
+    await page.getByRole('button', { name: '+ 3D' }).click();
+    await page.locator('.layer-card').last().locator('select').selectOption('techniqueShard3d');
     await page.waitForTimeout(250);
   } catch (error) {
     const body = await page.locator('body').innerText().catch(() => '');
@@ -95,6 +129,14 @@ try {
   const stopButtonCount = await page.getByRole('button', { name: 'Stop' }).count();
   const spectrumPanelCount = await page.locator('.spectrum-bars').count();
   const guitarGlyphOptionCount = await page.locator('select option[value="guitarGlyph3d"]').count();
+  const fretPulseOptionCount = await page.locator('select option[value="fretPulse2d"]').count();
+  const techniqueMapOptionCount = await page.locator('select option[value="techniqueMap2d"]').count();
+  const stringResonatorOptionCount = await page.locator('select option[value="stringResonator3d"]').count();
+  const techniqueShardOptionCount = await page.locator('select option[value="techniqueShard3d"]').count();
+  const desktopPixelStats = await getCanvasPixelStats(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(350);
+  const mobilePixelStats = await getCanvasPixelStats(page);
   await browser.close();
 
   if (errors.length > 0) {
@@ -112,10 +154,40 @@ try {
   if (spectrumPanelCount !== 1 || guitarGlyphOptionCount < 1) {
     throw new Error(`Unexpected guitar diagnostics/glyph controls: spectrum=${spectrumPanelCount} glyphOptions=${guitarGlyphOptionCount}`);
   }
+  if (fretPulseOptionCount < 1 || techniqueMapOptionCount < 1 || stringResonatorOptionCount < 1 || techniqueShardOptionCount < 1) {
+    throw new Error(
+      `Unexpected new mode controls: fretPulse=${fretPulseOptionCount} techniqueMap=${techniqueMapOptionCount} stringResonator=${stringResonatorOptionCount} techniqueShard=${techniqueShardOptionCount}`
+    );
+  }
+  if (desktopPixelStats.lit < 12 || desktopPixelStats.avgLuma < 4 || mobilePixelStats.lit < 12 || mobilePixelStats.avgLuma < 4) {
+    throw new Error(`Canvas appears blank: desktop=${JSON.stringify(desktopPixelStats)} mobile=${JSON.stringify(mobilePixelStats)}`);
+  }
 
-  console.log(JSON.stringify({ canvasCount, meterCount, tunerCount, tunerNeedleCount, recordButtonCount, stopButtonCount, spectrumPanelCount, guitarGlyphOptionCount }, null, 2));
+  console.log(JSON.stringify({ canvasCount, meterCount, tunerCount, tunerNeedleCount, recordButtonCount, stopButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, techniqueMapOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
 } finally {
   server.kill('SIGTERM');
+}
+
+async function getCanvasPixelStats(page) {
+  const canvas = await page.locator('.visual-host canvas').elementHandle();
+  return canvas.evaluate((node) => {
+    const sample = document.createElement('canvas');
+    sample.width = 64;
+    sample.height = 64;
+    const context = sample.getContext('2d');
+    context.drawImage(node, 0, 0, sample.width, sample.height);
+    const data = context.getImageData(0, 0, sample.width, sample.height).data;
+    let lit = 0;
+    let sum = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const luma = data[index] + data[index + 1] + data[index + 2];
+      sum += luma;
+      if (luma > 48) {
+        lit += 1;
+      }
+    }
+    return { lit, avgLuma: sum / (data.length / 4) };
+  });
 }
 
 async function waitForServer() {

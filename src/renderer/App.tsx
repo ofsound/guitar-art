@@ -30,19 +30,27 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 const MODE_LABELS: Record<VisualLayerMode, string> = {
   trails2d: '2D Trails',
   lineArt2d: '2D Line Art',
+  fretPulse2d: '2D Fret Pulse',
+  techniqueMap2d: '2D Technique Map',
   forms3d: '3D Forms',
   spectralField3d: '3D Spectral Field',
   chromaConstellation3d: '3D Chroma Constellation',
-  guitarGlyph3d: '3D Guitar Glyph'
+  guitarGlyph3d: '3D Guitar Glyph',
+  stringResonator3d: '3D String Resonator',
+  techniqueShard3d: '3D Technique Shards'
 };
 
 const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
   trails2d: '2d',
   lineArt2d: '2d',
+  fretPulse2d: '2d',
+  techniqueMap2d: '2d',
   forms3d: '3d',
   spectralField3d: '3d',
   chromaConstellation3d: '3d',
-  guitarGlyph3d: '3d'
+  guitarGlyph3d: '3d',
+  stringResonator3d: '3d',
+  techniqueShard3d: '3d'
 };
 
 type TunerReading = {
@@ -499,7 +507,7 @@ function createLayer(mode: VisualLayerMode, index: number): VisualLayer {
     controls: {
       ...DEFAULT_LAYER_CONTROLS,
       opacity: mode.endsWith('3d') ? 0.95 : 0.78,
-      requiresGate: mode === 'forms3d'
+      requiresGate: mode === 'forms3d' || mode === 'stringResonator3d' || mode === 'techniqueShard3d'
     }
   };
 }

@@ -16,6 +16,14 @@ type SeedPoint = {
   drift: number;
 };
 
+type ShardSeed = {
+  angle: number;
+  radius: number;
+  height: number;
+  phase: number;
+  techniqueBias: number;
+};
+
 type LayerFrame = {
   rms: number;
   peak: number;
@@ -52,6 +60,31 @@ type TwoDLayerContext = BaseLayerContext & {
   trailX: number;
   trailY: number;
   seed: number;
+};
+
+type StringResonatorLayerContext = BaseLayerContext & {
+  type: 'stringResonator3d';
+  group: THREE.Group;
+  lines: THREE.LineSegments;
+  geometry: THREE.BufferGeometry;
+  material: THREE.LineBasicMaterial;
+  positions: Float32Array;
+  colors: Float32Array;
+  stringEnergy: number[];
+  seenEventIds: Set<number>;
+};
+
+type TechniqueShardLayerContext = BaseLayerContext & {
+  type: 'techniqueShard3d';
+  group: THREE.Group;
+  shards: THREE.InstancedMesh;
+  material: THREE.MeshStandardMaterial;
+  ringLines: THREE.LineSegments;
+  ringGeometry: THREE.BufferGeometry;
+  ringMaterial: THREE.LineBasicMaterial;
+  ringPositions: Float32Array;
+  ringColors: Float32Array;
+  seeds: ShardSeed[];
 };
 
 type FormsLayerContext = BaseLayerContext & {
@@ -115,7 +148,14 @@ type GuitarGlyphLayerContext = BaseLayerContext & {
   seenEventIds: Set<number>;
 };
 
-type LayerContext = TwoDLayerContext | FormsLayerContext | SpectralLayerContext | ChromaLayerContext | GuitarGlyphLayerContext;
+type LayerContext =
+  | TwoDLayerContext
+  | FormsLayerContext
+  | SpectralLayerContext
+  | ChromaLayerContext
+  | GuitarGlyphLayerContext
+  | StringResonatorLayerContext
+  | TechniqueShardLayerContext;
 
 type RecordingState = {
   canvas: HTMLCanvasElement;
@@ -266,15 +306,19 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
         renderedLayerCount += 1;
 
         if (context.type === '2d') {
-          render2DLayer(context, layer, frame, dt, now, index);
+          render2DLayer(context, layer, frame, features, dt, now, index);
         } else if (context.type === 'forms3d') {
           renderFormsLayer(context, layer, frame, features, dt, index);
         } else if (context.type === 'spectralField3d') {
           renderSpectralFieldLayer(context, layer, frame, now, index);
         } else if (context.type === 'chromaConstellation3d') {
           renderChromaConstellationLayer(context, layer, frame, features, dt, now, index);
-        } else {
+        } else if (context.type === 'guitarGlyph3d') {
           renderGuitarGlyphLayer(context, layer, frame, features, dt, now, index);
+        } else if (context.type === 'stringResonator3d') {
+          renderStringResonatorLayer(context, layer, frame, features, dt, now, index);
+        } else {
+          renderTechniqueShardLayer(context, layer, frame, features, dt, now, index);
         }
       });
 
@@ -351,7 +395,7 @@ function reconcileLayerContexts(
 }
 
 function createLayerContext(scene: THREE.Scene, layer: VisualLayer, width: number, height: number): LayerContext {
-  if (layer.mode === 'trails2d' || layer.mode === 'lineArt2d') {
+  if (layer.mode === 'trails2d' || layer.mode === 'lineArt2d' || layer.mode === 'fretPulse2d' || layer.mode === 'techniqueMap2d') {
     return create2DLayerContext(scene, layer, width, height);
   }
   if (layer.mode === 'forms3d') {
@@ -362,6 +406,12 @@ function createLayerContext(scene: THREE.Scene, layer: VisualLayer, width: numbe
   }
   if (layer.mode === 'guitarGlyph3d') {
     return createGuitarGlyphLayerContext(scene, layer);
+  }
+  if (layer.mode === 'stringResonator3d') {
+    return createStringResonatorLayerContext(scene, layer);
+  }
+  if (layer.mode === 'techniqueShard3d') {
+    return createTechniqueShardLayerContext(scene, layer);
   }
   return createSpectralFieldLayerContext(scene, layer);
 }
@@ -719,6 +769,111 @@ function createGuitarGlyphLayerContext(scene: THREE.Scene, layer: VisualLayer): 
   };
 }
 
+function createStringResonatorLayerContext(scene: THREE.Scene, layer: VisualLayer): StringResonatorLayerContext {
+  const group = new THREE.Group();
+  scene.add(group);
+  const stringCount = 6;
+  const segments = 56;
+  const positions = new Float32Array(stringCount * (segments - 1) * 2 * 3);
+  const colors = new Float32Array(stringCount * (segments - 1) * 2 * 3);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const material = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: layer.controls.opacity,
+    blending: THREE.AdditiveBlending
+  });
+  const lines = new THREE.LineSegments(geometry, material);
+  group.add(lines);
+
+  return {
+    id: layer.id,
+    mode: layer.mode,
+    type: 'stringResonator3d',
+    group,
+    lines,
+    geometry,
+    material,
+    positions,
+    colors,
+    stringEnergy: Array.from({ length: stringCount }, () => 0),
+    seenEventIds: new Set(),
+    smoothed: createEmptyFrame(),
+    dispose: () => {
+      scene.remove(group);
+      geometry.dispose();
+      material.dispose();
+    }
+  };
+}
+
+function createTechniqueShardLayerContext(scene: THREE.Scene, layer: VisualLayer): TechniqueShardLayerContext {
+  const group = new THREE.Group();
+  scene.add(group);
+  const count = 108;
+  const shardGeometry = new THREE.BoxGeometry(0.055, 0.32, 0.055, 1, 3, 1);
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xf2b36c,
+    emissive: 0x241207,
+    emissiveIntensity: 0.7,
+    metalness: 0.18,
+    roughness: 0.44,
+    transparent: true,
+    opacity: layer.controls.opacity
+  });
+  const shards = new THREE.InstancedMesh(shardGeometry, material, count);
+  shards.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  group.add(shards);
+
+  const ringPositions = new Float32Array(12 * 2 * 3);
+  const ringColors = new Float32Array(12 * 2 * 3);
+  const ringGeometry = new THREE.BufferGeometry();
+  ringGeometry.setAttribute('position', new THREE.BufferAttribute(ringPositions, 3));
+  ringGeometry.setAttribute('color', new THREE.BufferAttribute(ringColors, 3));
+  const ringMaterial = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: layer.controls.opacity * 0.55,
+    blending: THREE.AdditiveBlending
+  });
+  const ringLines = new THREE.LineSegments(ringGeometry, ringMaterial);
+  group.add(ringLines);
+
+  const seeds: ShardSeed[] = Array.from({ length: count }, (_, index) => ({
+    angle: (index / count) * Math.PI * 2 * 5 + Math.random() * 0.22,
+    radius: 0.45 + Math.random() * 2.65,
+    height: -1.25 + Math.random() * 2.5,
+    phase: Math.random() * Math.PI * 2,
+    techniqueBias: Math.random()
+  }));
+
+  return {
+    id: layer.id,
+    mode: layer.mode,
+    type: 'techniqueShard3d',
+    group,
+    shards,
+    material,
+    ringLines,
+    ringGeometry,
+    ringMaterial,
+    ringPositions,
+    ringColors,
+    seeds,
+    smoothed: createEmptyFrame(),
+    dispose: () => {
+      scene.remove(group);
+      shardGeometry.dispose();
+      material.dispose();
+      shards.dispose();
+      ringGeometry.dispose();
+      ringMaterial.dispose();
+    }
+  };
+}
+
 function resizeCanvasLayer(layer: TwoDLayerContext, width: number, height: number) {
   const ratio = Math.min(window.devicePixelRatio, 2);
   const canvasWidth = Math.max(1, Math.floor(width * ratio));
@@ -809,7 +964,15 @@ function getLayerFrame(context: LayerContext, layer: VisualLayer, features: Audi
   return context.smoothed;
 }
 
-function render2DLayer(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, dt: number, now: number, index: number) {
+function render2DLayer(
+  layerContext: TwoDLayerContext,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  dt: number,
+  now: number,
+  index: number
+) {
   layerContext.material.opacity = layer.enabled ? layer.controls.opacity : 0;
   layerContext.plane.visible = layer.enabled && layer.controls.opacity > 0;
   if (!layerContext.plane.visible) {
@@ -817,6 +980,10 @@ function render2DLayer(layerContext: TwoDLayerContext, layer: VisualLayer, frame
   }
   if (layer.mode === 'lineArt2d') {
     drawLineArt(layerContext, layer, frame, now, index);
+  } else if (layer.mode === 'fretPulse2d') {
+    drawFretPulse(layerContext, layer, frame, features, now);
+  } else if (layer.mode === 'techniqueMap2d') {
+    drawTechniqueMap(layerContext, layer, frame, features, now);
   } else {
     drawTrails(layerContext, layer, frame, dt, now);
   }
@@ -892,6 +1059,169 @@ function drawLineArt(layerContext: TwoDLayerContext, layer: VisualLayer, frame: 
     }
     context.stroke();
   }
+
+  context.globalCompositeOperation = 'source-over';
+}
+
+function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, features: AudioFeatures, now: number) {
+  const { context, canvas } = layerContext;
+  const voicing = Array.isArray(features.voicing) ? features.voicing : [];
+  const events = Array.isArray(features.guitarEvents) ? features.guitarEvents : [];
+  context.fillStyle = `rgba(7, 10, 11, ${frame.gateOpen ? 0.02 : 0.045})`;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const left = canvas.width * 0.09;
+  const right = canvas.width * 0.91;
+  const top = canvas.height * 0.18;
+  const bottom = canvas.height * 0.82;
+  const width = right - left;
+  const height = bottom - top;
+  const color = new THREE.Color();
+
+  context.globalCompositeOperation = 'lighter';
+  context.lineCap = 'round';
+  for (let string = 1; string <= 6; string += 1) {
+    const y = top + ((6 - string) / 5) * height;
+    const stringEnergy = getStringEnergy(features, string);
+    context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + string * 13)}, ${58 + frame.high * 22}%, ${34 + stringEnergy * 38}%, ${0.16 + layer.controls.opacity * 0.42})`;
+    context.lineWidth = 1 + stringEnergy * 10 + (features.muteAmount ?? 0) * 5;
+    context.beginPath();
+    for (let point = 0; point <= 96; point += 1) {
+      const x = left + (point / 96) * width;
+      const wobble = Math.sin(point * 0.36 + now * 0.007 + string) * (stringEnergy * 8 + frame.vibratoDepth * 14) * layer.controls.motionAmount;
+      if (point === 0) {
+        context.moveTo(x, y + wobble);
+      } else {
+        context.lineTo(x, y + wobble);
+      }
+    }
+    context.stroke();
+  }
+
+  for (let fret = 0; fret <= 12; fret += 1) {
+    const x = left + (fret / 12) * width;
+    const strong = fret === 0 || fret === 12 || fret === features.fretNumber;
+    context.strokeStyle = `rgba(180, 205, 196, ${strong ? 0.34 + frame.attack * 0.28 : 0.11})`;
+    context.lineWidth = strong ? 2.4 : 1;
+    context.beginPath();
+    context.moveTo(x, top - 16);
+    context.lineTo(x, bottom + 16);
+    context.stroke();
+  }
+
+  voicing.forEach((candidate) => {
+    const confidence = clamp01(candidate.confidence);
+    const x = left + (Math.max(0, Math.min(12, candidate.fretNumber)) / 12) * width;
+    const y = top + ((6 - Math.max(1, Math.min(6, candidate.stringNumber))) / 5) * height;
+    const radius = (10 + confidence * 30 + frame.attack * 18) * layer.controls.scaleAmount;
+    color.setHSL(wrap01(candidate.pitchClass / 12 + frame.hue * 0.05), 0.78, 0.48 + confidence * 0.22);
+    const gradient = context.createRadialGradient(x, y, 1, x, y, radius * 1.8);
+    gradient.addColorStop(0, `rgba(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)}, ${0.36 + confidence * 0.34})`);
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    context.fillStyle = gradient;
+    context.beginPath();
+    context.arc(x, y, radius * 1.8, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = `rgba(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)}, ${0.62 + confidence * 0.28})`;
+    context.lineWidth = 1.2 + confidence * 3;
+    context.beginPath();
+    context.arc(x, y, radius * 0.52, 0, Math.PI * 2);
+    context.stroke();
+  });
+
+  events.forEach((event) => {
+    const age = Math.max(0, features.t - event.t);
+    if (age > 1.3) {
+      return;
+    }
+    const x = left + (Math.max(0, Math.min(12, event.fretNumber ?? features.fretNumber ?? 0)) / 12) * width;
+    const y = top + ((6 - Math.max(1, Math.min(6, event.stringNumber ?? features.stringNumber ?? 3))) / 5) * height;
+    const alpha = (1 - age / 1.3) * clamp01(event.strength) * layer.controls.opacity;
+    const radius = (age * 130 + 18 + frame.onset * 26) * layer.controls.scaleAmount;
+    context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + techniqueHueOffset(event.type))}, 82%, 62%, ${alpha})`;
+    context.lineWidth = 1 + alpha * 8;
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.stroke();
+  });
+
+  if (features.bendCents && Math.abs(features.bendCents) > 8 && features.stringNumber && features.fretNumber !== null) {
+    const x = left + (Math.max(0, Math.min(12, features.fretNumber ?? 0)) / 12) * width;
+    const y = top + ((6 - Math.max(1, Math.min(6, features.stringNumber))) / 5) * height;
+    context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + 190)}, 82%, 64%, ${0.18 + clamp01(Math.abs(features.bendCents) / 180) * 0.52})`;
+    context.lineWidth = 2 + clamp01(Math.abs(features.bendCents) / 120) * 6;
+    context.beginPath();
+    context.moveTo(x - 36, y);
+    context.quadraticCurveTo(x, y - Math.sign(features.bendCents) * 58, x + 48, y - Math.sign(features.bendCents) * 20);
+    context.stroke();
+  }
+
+  context.globalCompositeOperation = 'source-over';
+}
+
+function drawTechniqueMap(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, features: AudioFeatures, now: number) {
+  const { context, canvas } = layerContext;
+  context.globalCompositeOperation = 'source-over';
+  context.drawImage(canvas, -Math.max(1, Math.floor(2 + layer.controls.motionAmount * 3)), 0);
+  context.fillStyle = 'rgba(7, 10, 11, 0.035)';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const x = canvas.width - Math.max(4, Math.floor(canvas.width * 0.006));
+  const columnWidth = Math.max(3, Math.floor(canvas.width * 0.01));
+  const lanes = [
+    clamp01(features.pickNoise ?? 0),
+    clamp01(features.muteAmount ?? 0),
+    clamp01(features.harmonicRatio ?? 0),
+    clamp01(features.vibratoDepth ?? 0),
+    clamp01(Math.abs(features.bendCents ?? 0) / 180),
+    clamp01(features.chordConfidence ?? 0)
+  ];
+  const laneHeight = canvas.height / lanes.length;
+  context.globalCompositeOperation = 'lighter';
+  lanes.forEach((value, lane) => {
+    const y = lane * laneHeight;
+    const hue = wrap01(frame.hue + lane * 0.105 + getTechniqueIntensity(features) * 0.08);
+    const height = Math.max(2, value * laneHeight * 0.78 * layer.controls.scaleAmount);
+    context.fillStyle = `hsla(${Math.round(hue * 360)}, ${64 + value * 24}%, ${28 + value * 46}%, ${0.18 + value * 0.54})`;
+    context.fillRect(x, y + laneHeight - height, columnWidth, height);
+
+    const spectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
+    const spectrumValue = clamp01(spectrum[(lane * 5 + Math.floor(now * 0.01)) % Math.max(1, spectrum.length)] ?? 0);
+    context.strokeStyle = `hsla(${Math.round((hue + 0.06) * 360)}, 82%, ${48 + spectrumValue * 26}%, ${0.08 + spectrumValue * 0.42})`;
+    context.lineWidth = 1 + spectrumValue * 4;
+    context.beginPath();
+    context.moveTo(x - 2, y + laneHeight * 0.5);
+    context.lineTo(x + columnWidth + spectrumValue * 34, y + laneHeight * (0.5 - (value - 0.5) * 0.7));
+    context.stroke();
+  });
+
+  const events = Array.isArray(features.guitarEvents) ? features.guitarEvents : [];
+  events.forEach((event) => {
+    const age = Math.max(0, features.t - event.t);
+    if (age > 1.2) {
+      return;
+    }
+    const eventX = canvas.width - age * canvas.width * 0.44 * Math.max(0.4, layer.controls.motionAmount);
+    const eventLane = eventLaneIndex(event.type);
+    const y = eventLane * laneHeight + laneHeight * 0.5;
+    const alpha = (1 - age / 1.2) * clamp01(event.strength) * layer.controls.opacity;
+    context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + techniqueHueOffset(event.type))}, 92%, 62%, ${alpha})`;
+    context.lineWidth = 1 + alpha * 7;
+    context.beginPath();
+    context.moveTo(eventX, y - laneHeight * 0.34);
+    context.lineTo(eventX, y + laneHeight * 0.34);
+    context.stroke();
+  });
+
+  const chroma = Array.isArray(features.chroma) ? features.chroma : [];
+  chroma.forEach((value, pitchClass) => {
+    if (value < 0.16) {
+      return;
+    }
+    const y = canvas.height - (pitchClass + 0.5) * (canvas.height / 12);
+    context.fillStyle = `hsla(${Math.round((pitchClass / 12 + frame.hue * 0.06) * 360)}, 80%, ${34 + value * 36}%, ${0.05 + value * 0.22})`;
+    context.fillRect(x - 2, y - 1, columnWidth + value * 28, 2 + value * 5);
+  });
 
   context.globalCompositeOperation = 'source-over';
 }
@@ -1108,6 +1438,157 @@ function renderGuitarGlyphLayer(
   context.particleGeometry.attributes.color.needsUpdate = true;
 }
 
+function renderStringResonatorLayer(
+  context: StringResonatorLayerContext,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  dt: number,
+  now: number,
+  index: number
+) {
+  context.group.visible = layer.enabled && layer.controls.opacity > 0;
+  context.material.opacity = layer.controls.opacity * (0.34 + frame.rms * 0.56 + clamp01(features.harmonicRatio ?? 0) * 0.22);
+  if (!context.group.visible) {
+    return;
+  }
+
+  const events = Array.isArray(features.guitarEvents) ? features.guitarEvents : [];
+  events.forEach((event) => {
+    if (context.seenEventIds.has(event.id)) {
+      return;
+    }
+    context.seenEventIds.add(event.id);
+    if (context.seenEventIds.size > 128) {
+      context.seenEventIds = new Set(Array.from(context.seenEventIds).slice(-96));
+    }
+    const stringNumber = event.stringNumber ?? features.stringNumber;
+    if (typeof stringNumber === 'number') {
+      const stringIndex = 6 - Math.max(1, Math.min(6, Math.round(stringNumber)));
+      context.stringEnergy[stringIndex] = Math.max(context.stringEnergy[stringIndex], clamp01(event.strength));
+    }
+  });
+
+  const activeString = typeof features.stringNumber === 'number' ? 6 - Math.max(1, Math.min(6, Math.round(features.stringNumber))) : -1;
+  const voicing = Array.isArray(features.voicing) ? features.voicing : [];
+  const color = new THREE.Color();
+  const segments = 56;
+  let offset = 0;
+  context.group.position.set((index - 1) * 0.28, -0.05, -0.15 - index * 0.08);
+  context.group.rotation.x = -0.12 + Math.sin(now * 0.00018 + index) * 0.1 * layer.controls.motionAmount;
+  context.group.rotation.y = Math.sin(now * 0.00015 + features.bendCents * 0.002) * 0.22 * layer.controls.motionAmount;
+  context.group.scale.setScalar(0.92 + frame.low * 0.18 + clamp01(features.guitarTechniqueConfidence ?? 0) * 0.1);
+
+  for (let stringIndex = 0; stringIndex < 6; stringIndex += 1) {
+    const stringNumber = 6 - stringIndex;
+    const voicingEnergy = voicing
+      .filter((candidate) => candidate.stringNumber === stringNumber)
+      .reduce((max, candidate) => Math.max(max, clamp01(candidate.confidence)), 0);
+    const directEnergy = activeString === stringIndex ? clamp01(features.pitchConfidence ?? 0) : 0;
+    const energy = Math.max(context.stringEnergy[stringIndex], voicingEnergy, directEnergy * 0.8);
+    const muteDamp = 1 - clamp01(features.muteAmount ?? 0) * 0.55;
+    const y = 1.12 - stringIndex * 0.44;
+    const zBase = (stringIndex - 2.5) * 0.06;
+    const bend = clamp01(Math.abs(features.bendCents ?? 0) / 180);
+    const waveAmp = (0.025 + energy * 0.34 + frame.vibratoDepth * 0.22 + bend * 0.18) * layer.controls.scaleAmount * muteDamp;
+    const frequency = 1.4 + stringIndex * 0.18 + frame.vibratoRate * 3.2 + clamp01(features.pickNoise ?? 0) * 1.4;
+    const hue = wrap01(frame.hue + stringIndex * 0.065 + voicingEnergy * 0.08);
+    context.stringEnergy[stringIndex] *= Math.max(0.78, 0.96 - dt * (1.4 + clamp01(features.muteAmount ?? 0) * 3));
+
+    for (let segment = 0; segment < segments - 1; segment += 1) {
+      for (let endpoint = 0; endpoint < 2; endpoint += 1) {
+        const point = segment + endpoint;
+        const pct = point / (segments - 1);
+        const x = -2.9 + pct * 5.8;
+        const fretFocus = typeof features.fretNumber === 'number' ? features.fretNumber / 12 : 0.5;
+        const envelope = Math.sin(Math.PI * pct) * (0.55 + Math.exp(-Math.abs(pct - fretFocus) * 6) * 0.45);
+        const phase = now * 0.004 * layer.controls.motionAmount + point * frequency + stringIndex;
+        const z = zBase + Math.sin(phase) * waveAmp * envelope + Math.cos(phase * 0.43) * waveAmp * 0.35;
+        context.positions[offset] = x;
+        context.positions[offset + 1] = y + Math.cos(phase * 0.6) * waveAmp * 0.28;
+        context.positions[offset + 2] = z;
+        color.setHSL(hue, 0.66 + energy * 0.24, 0.28 + energy * 0.42 + (activeString === stringIndex ? frame.attack * 0.18 : 0));
+        context.colors[offset] = color.r;
+        context.colors[offset + 1] = color.g;
+        context.colors[offset + 2] = color.b;
+        offset += 3;
+      }
+    }
+  }
+
+  context.geometry.attributes.position.needsUpdate = true;
+  context.geometry.attributes.color.needsUpdate = true;
+}
+
+function renderTechniqueShardLayer(
+  context: TechniqueShardLayerContext,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  dt: number,
+  now: number,
+  index: number
+) {
+  context.group.visible = layer.enabled && layer.controls.opacity > 0;
+  context.material.opacity = layer.controls.opacity * (0.52 + clamp01(features.guitarTechniqueConfidence ?? 0) * 0.38);
+  context.ringMaterial.opacity = layer.controls.opacity * (0.22 + frame.onset * 0.42 + clamp01(features.chordConfidence ?? 0) * 0.18);
+  if (!context.group.visible) {
+    return;
+  }
+
+  const techniqueIntensity = getTechniqueIntensity(features);
+  const pick = clamp01(features.pickNoise ?? 0);
+  const mute = clamp01(features.muteAmount ?? 0);
+  const bend = clamp01(Math.abs(features.bendCents ?? 0) / 180);
+  const harmonic = clamp01(features.harmonicRatio ?? 0);
+  const confidence = clamp01(features.guitarTechniqueConfidence ?? 0);
+  const shardColor = new THREE.Color();
+  const matrix = new THREE.Matrix4();
+  const quaternion = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+
+  context.group.position.set((index - 1) * 0.34, 0.06, -0.28 - index * 0.08);
+  context.group.rotation.y += dt * (0.11 + techniqueIntensity * 0.46 + bend * 0.7) * layer.controls.motionAmount;
+  context.group.rotation.x = Math.sin(now * 0.0002 + index) * 0.2 * layer.controls.motionAmount;
+
+  context.seeds.forEach((seed, shardIndex) => {
+    const techniqueMatch = techniqueIntensity * (0.55 + seed.techniqueBias * 0.55);
+    const radius = seed.radius * (0.62 + harmonic * 0.42 + frame.mid * 0.28);
+    const spin = now * 0.00025 * layer.controls.motionAmount * (1 + seed.techniqueBias * 2.2 + pick);
+    const angle = seed.angle + spin + bend * Math.sin(seed.phase + now * 0.003) * 0.8;
+    const rough = pick * Math.sin(seed.phase * 2.1 + now * 0.008) * 0.34;
+    const position = new THREE.Vector3(
+      Math.cos(angle) * radius + rough,
+      seed.height * (0.76 + frame.low * 0.2) + Math.sin(seed.phase + now * 0.0017) * (0.14 + frame.vibratoDepth * 0.55),
+      Math.sin(angle) * radius * (0.58 + frame.brightness * 0.42) - mute * 0.34
+    );
+    quaternion.setFromEuler(new THREE.Euler(
+      angle * 0.2 + frame.vibratoDepth * 1.5,
+      angle + now * 0.0007,
+      seed.phase + techniqueMatch * 2.4
+    ));
+    const shardScale = (0.42 + frame.rms * 1.5 + techniqueMatch * 1.4 + frame.attack * 1.1) * layer.controls.scaleAmount;
+    scale.set(
+      0.6 + pick * 1.8 + bend * 1.2,
+      shardScale * (0.55 + seed.techniqueBias * 1.7),
+      0.65 + mute * 1.4 + harmonic * 0.45
+    );
+    matrix.compose(position, quaternion, scale);
+    context.shards.setMatrixAt(shardIndex, matrix);
+    const hue = wrap01(frame.hue + getTechniqueHue(features.guitarTechnique) + seed.techniqueBias * 0.08);
+    shardColor.setHSL(hue, 0.62 + confidence * 0.26, 0.28 + techniqueMatch * 0.42 + frame.attack * 0.14);
+    context.shards.setColorAt(shardIndex, shardColor);
+  });
+  context.shards.instanceMatrix.needsUpdate = true;
+  if (context.shards.instanceColor) {
+    context.shards.instanceColor.needsUpdate = true;
+  }
+  context.material.emissive.setHSL(wrap01(frame.hue + getTechniqueHue(features.guitarTechnique)), 0.7, 0.05 + techniqueIntensity * 0.25 + frame.attack * 0.12);
+  context.material.emissiveIntensity = 0.55 + techniqueIntensity * 1.9 + frame.onset * 1.2;
+
+  updateTechniqueShardRings(context, features, frame);
+}
+
 function updateChordLines(context: ChromaLayerContext, chordClasses: number[], confidence: number, color: THREE.Color) {
   let segment = 0;
   const classes = chordClasses.length >= 2 ? chordClasses : [];
@@ -1141,6 +1622,48 @@ function updateChordLines(context: ChromaLayerContext, chordClasses: number[], c
   }
   context.lineGeometry.attributes.position.needsUpdate = true;
   context.lineGeometry.attributes.color.needsUpdate = true;
+}
+
+function updateTechniqueShardRings(context: TechniqueShardLayerContext, features: AudioFeatures, frame: LayerFrame) {
+  const color = new THREE.Color();
+  const chroma = Array.isArray(features.chroma) ? features.chroma : [];
+  let segment = 0;
+  for (let pitchClass = 0; pitchClass < 12; pitchClass += 1) {
+    const value = clamp01(chroma[pitchClass] ?? 0);
+    if (value < 0.18) {
+      continue;
+    }
+    const fromAngle = (pitchClass / 12) * Math.PI * 2;
+    const toAngle = ((pitchClass + 1) / 12) * Math.PI * 2;
+    const radius = 1.2 + value * 1.25 + clamp01(features.chordConfidence ?? 0) * 0.45;
+    const y = -1.1 + value * 0.46 + frame.vibratoDepth * 0.3;
+    const offset = segment * 6;
+    context.ringPositions[offset] = Math.cos(fromAngle) * radius;
+    context.ringPositions[offset + 1] = y;
+    context.ringPositions[offset + 2] = Math.sin(fromAngle) * radius * 0.72;
+    context.ringPositions[offset + 3] = Math.cos(toAngle) * radius;
+    context.ringPositions[offset + 4] = y;
+    context.ringPositions[offset + 5] = Math.sin(toAngle) * radius * 0.72;
+    color.setHSL(wrap01(pitchClass / 12 + frame.hue * 0.06), 0.82, 0.34 + value * 0.38);
+    context.ringColors[offset] = color.r;
+    context.ringColors[offset + 1] = color.g;
+    context.ringColors[offset + 2] = color.b;
+    context.ringColors[offset + 3] = color.r;
+    context.ringColors[offset + 4] = color.g;
+    context.ringColors[offset + 5] = color.b;
+    segment += 1;
+  }
+
+  for (let index = segment * 6; index < context.ringPositions.length; index += 6) {
+    context.ringPositions[index] = 999;
+    context.ringPositions[index + 1] = 999;
+    context.ringPositions[index + 2] = 999;
+    context.ringPositions[index + 3] = 999;
+    context.ringPositions[index + 4] = 999;
+    context.ringPositions[index + 5] = 999;
+  }
+  context.ringGeometry.attributes.position.needsUpdate = true;
+  context.ringGeometry.attributes.color.needsUpdate = true;
 }
 
 function spawnChromaParticles(context: ChromaLayerContext, chroma: number[], frame: LayerFrame) {
@@ -1210,6 +1733,98 @@ function stringToY(stringNumber: number): number {
 function fretToX(fretNumber: number): number {
   const clamped = Math.max(0, Math.min(12, fretNumber));
   return -2.35 + clamped * 0.39;
+}
+
+function getStringEnergy(features: AudioFeatures, stringNumber: number): number {
+  const voicingEnergy = Array.isArray(features.voicing)
+    ? features.voicing
+        .filter((candidate) => candidate.stringNumber === stringNumber)
+        .reduce((max, candidate) => Math.max(max, clamp01(candidate.confidence)), 0)
+    : 0;
+  const directEnergy = features.stringNumber === stringNumber ? clamp01(features.pitchConfidence) : 0;
+  const eventEnergy = Array.isArray(features.guitarEvents)
+    ? features.guitarEvents
+        .filter((event) => event.stringNumber === stringNumber)
+        .reduce((max, event) => Math.max(max, clamp01(event.strength) * Math.max(0, 1 - Math.max(0, features.t - event.t) / 1.2)), 0)
+    : 0;
+  return Math.max(voicingEnergy, directEnergy, eventEnergy);
+}
+
+function getTechniqueIntensity(features: AudioFeatures): number {
+  const confidence = clamp01(features.guitarTechniqueConfidence ?? 0);
+  const expressive = Math.max(
+    clamp01(features.pickNoise ?? 0),
+    clamp01(features.muteAmount ?? 0),
+    clamp01(features.vibratoDepth ?? 0),
+    clamp01(Math.abs(features.bendCents ?? 0) / 180),
+    clamp01(features.chordConfidence ?? 0),
+    clamp01(features.harmonicRatio ?? 0)
+  );
+  return clamp01(confidence * 0.55 + expressive * 0.45);
+}
+
+function getTechniqueHue(technique: AudioFeatures['guitarTechnique']): number {
+  switch (technique) {
+    case 'palm_mute':
+      return 0.03;
+    case 'scrape':
+    case 'noise':
+      return 0.11;
+    case 'strum':
+      return 0.2;
+    case 'bend':
+      return 0.52;
+    case 'vibrato':
+      return 0.68;
+    case 'single_note':
+      return 0.82;
+    case 'sustain':
+      return 0.9;
+    default:
+      return 0;
+  }
+}
+
+function techniqueHueOffset(type: AudioFeatures['guitarEvents'][number]['type']): number {
+  switch (type) {
+    case 'pluck':
+    case 'note_on':
+      return 35;
+    case 'strum':
+    case 'chord_change':
+      return 96;
+    case 'bend':
+      return 190;
+    case 'vibrato':
+      return 245;
+    case 'mute':
+      return 18;
+    case 'noise':
+      return 310;
+    default:
+      return 0;
+  }
+}
+
+function eventLaneIndex(type: AudioFeatures['guitarEvents'][number]['type']): number {
+  switch (type) {
+    case 'pluck':
+    case 'note_on':
+      return 0;
+    case 'mute':
+      return 1;
+    case 'strum':
+    case 'chord_change':
+      return 2;
+    case 'vibrato':
+      return 3;
+    case 'bend':
+      return 4;
+    case 'noise':
+      return 5;
+    default:
+      return 0;
+  }
 }
 
 function getChordPitchClasses(features: AudioFeatures): number[] {

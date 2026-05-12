@@ -135,7 +135,17 @@ export type AudioStatus = {
 
 export type VisualLayerKind = '2d' | '3d';
 
-export type VisualLayerMode = 'trails2d' | 'lineArt2d' | 'forms3d' | 'spectralField3d' | 'chromaConstellation3d' | 'guitarGlyph3d';
+export type VisualLayerMode =
+  | 'trails2d'
+  | 'lineArt2d'
+  | 'fretPulse2d'
+  | 'techniqueMap2d'
+  | 'forms3d'
+  | 'spectralField3d'
+  | 'chromaConstellation3d'
+  | 'guitarGlyph3d'
+  | 'stringResonator3d'
+  | 'techniqueShard3d';
 
 export type VisualLayerControls = {
   sensitivity: number;
