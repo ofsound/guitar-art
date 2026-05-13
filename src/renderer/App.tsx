@@ -820,86 +820,6 @@ export function App() {
           />
         </section>
 
-        <section className="record-panel">
-          <label>Art capture</label>
-          <div className="control-group">
-            <label>
-              <ControlLabel tooltip={CONTROL_TOOLTIPS.live2dQuality}>Live 2D quality</ControlLabel>
-            </label>
-            <div className="segmented three">
-              {(['low', 'medium', 'high'] as const).map((quality) => (
-                <button
-                  key={quality}
-                  type="button"
-                  className={visualQuality === quality ? 'active' : ''}
-                  onClick={() => setVisualQuality(quality)}
-                >
-                  {quality[0].toUpperCase() + quality.slice(1)}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="capture-grid">
-            <label>
-              <ControlLabel tooltip={CONTROL_TOOLTIPS.captureWidth}>Width</ControlLabel>
-              <input
-                type="number"
-                min={640}
-                max={7680}
-                step={160}
-                value={captureSettings.width}
-                onInput={(event) => setCaptureSettings((prev) => ({ ...prev, width: Number(event.currentTarget.value) }))}
-              />
-            </label>
-            <label>
-              <ControlLabel tooltip={CONTROL_TOOLTIPS.captureHeight}>Height</ControlLabel>
-              <input
-                type="number"
-                min={360}
-                max={4320}
-                step={90}
-                value={captureSettings.height}
-                onInput={(event) => setCaptureSettings((prev) => ({ ...prev, height: Number(event.currentTarget.value) }))}
-              />
-            </label>
-          </div>
-          <label className="switch-row">
-            <input
-              type="checkbox"
-              checked={captureSettings.transparentBackground}
-              onChange={(event) => setCaptureSettings((prev) => ({ ...prev, transparentBackground: event.target.checked }))}
-            />
-            <ControlLabel tooltip={CONTROL_TOOLTIPS.transparentBackground}>Transparent</ControlLabel>
-          </label>
-          <LayerSlider
-            label="Accumulation"
-            tooltip={CONTROL_TOOLTIPS.accumulationAlpha}
-            value={captureSettings.accumulationAlpha}
-            min={0.04}
-            max={0.4}
-            step={0.01}
-            onChange={(value) => setCaptureSettings((prev) => ({ ...prev, accumulationAlpha: value }))}
-          />
-          <div className="record-actions">
-            <button onClick={captureStill} disabled={recording || videoRecording}>
-              Snapshot
-            </button>
-            <button onClick={startArtRecording} disabled={recording || videoRecording}>
-              Cumulative
-            </button>
-            <button className="secondary" onClick={stopArtRecording} disabled={!recording}>
-              Stop
-            </button>
-            <button onClick={startVideoRecording} disabled={recording || videoRecording}>
-              WebM
-            </button>
-            <button className="secondary" onClick={stopVideoRecording} disabled={!videoRecording}>
-              Stop video
-            </button>
-          </div>
-          <div className={`record-state ${recording ? 'active' : ''}`}>{recordingStatus}</div>
-        </section>
-
         <section className="transport">
           <button onClick={() => start(config.mode)}>{status.running ? 'Restart' : 'Start'}</button>
           <button className="secondary" onClick={stop}>
@@ -985,6 +905,88 @@ export function App() {
           </>
         ) : null}
       </main>
+
+      <aside className="capture-rail">
+        <section className="record-panel">
+          <label>Art capture</label>
+          <div className="control-group">
+            <label>
+              <ControlLabel tooltip={CONTROL_TOOLTIPS.live2dQuality}>Live 2D quality</ControlLabel>
+            </label>
+            <div className="segmented three">
+              {(['low', 'medium', 'high'] as const).map((quality) => (
+                <button
+                  key={quality}
+                  type="button"
+                  className={visualQuality === quality ? 'active' : ''}
+                  onClick={() => setVisualQuality(quality)}
+                >
+                  {quality[0].toUpperCase() + quality.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="capture-grid">
+            <label>
+              <ControlLabel tooltip={CONTROL_TOOLTIPS.captureWidth}>Width</ControlLabel>
+              <input
+                type="number"
+                min={640}
+                max={7680}
+                step={160}
+                value={captureSettings.width}
+                onInput={(event) => setCaptureSettings((prev) => ({ ...prev, width: Number(event.currentTarget.value) }))}
+              />
+            </label>
+            <label>
+              <ControlLabel tooltip={CONTROL_TOOLTIPS.captureHeight}>Height</ControlLabel>
+              <input
+                type="number"
+                min={360}
+                max={4320}
+                step={90}
+                value={captureSettings.height}
+                onInput={(event) => setCaptureSettings((prev) => ({ ...prev, height: Number(event.currentTarget.value) }))}
+              />
+            </label>
+          </div>
+          <label className="switch-row">
+            <input
+              type="checkbox"
+              checked={captureSettings.transparentBackground}
+              onChange={(event) => setCaptureSettings((prev) => ({ ...prev, transparentBackground: event.target.checked }))}
+            />
+            <ControlLabel tooltip={CONTROL_TOOLTIPS.transparentBackground}>Transparent</ControlLabel>
+          </label>
+          <LayerSlider
+            label="Accumulation"
+            tooltip={CONTROL_TOOLTIPS.accumulationAlpha}
+            value={captureSettings.accumulationAlpha}
+            min={0.04}
+            max={0.4}
+            step={0.01}
+            onChange={(value) => setCaptureSettings((prev) => ({ ...prev, accumulationAlpha: value }))}
+          />
+          <div className="record-actions">
+            <button onClick={captureStill} disabled={recording || videoRecording}>
+              Snapshot
+            </button>
+            <button onClick={startArtRecording} disabled={recording || videoRecording}>
+              Cumulative
+            </button>
+            <button className="secondary" onClick={stopArtRecording} disabled={!recording}>
+              Stop
+            </button>
+            <button onClick={startVideoRecording} disabled={recording || videoRecording}>
+              WebM
+            </button>
+            <button className="secondary" onClick={stopVideoRecording} disabled={!videoRecording}>
+              Stop video
+            </button>
+          </div>
+          <div className={`record-state ${recording ? 'active' : ''}`}>{recordingStatus}</div>
+        </section>
+      </aside>
     </div>
   );
 }
