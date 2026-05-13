@@ -488,6 +488,7 @@ export function App() {
     layers: false,
     dsp: false
   });
+  const [minimizedLayerIds, setMinimizedLayerIds] = useState<string[]>([]);
   const [recordingStatus, setRecordingStatus] = useState('Ready to record');
   const [status, setStatus] = useState<AudioStatus>({
     running: false,
@@ -619,6 +620,7 @@ export function App() {
 
   function removeLayer(id: string) {
     setLayers((prev) => prev.filter((layer) => layer.id !== id));
+    setMinimizedLayerIds((prev) => prev.filter((layerId) => layerId !== id));
   }
 
   function savePreset() {
@@ -637,6 +639,7 @@ export function App() {
     const preset = presets.find((item) => item.id === selectedPresetId);
     if (preset) {
       setLayers(cloneLayers(preset.layers));
+      setMinimizedLayerIds([]);
       setPresetName(preset.name);
     }
   }
@@ -732,6 +735,10 @@ export function App() {
 
   function toggleRail(key: RailKey) {
     setMinimizedRails((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  function toggleLayerCard(id: string) {
+    setMinimizedLayerIds((prev) => (prev.includes(id) ? prev.filter((layerId) => layerId !== id) : [...prev, id]));
   }
 
   const shellClassName = [
@@ -907,10 +914,12 @@ export function App() {
               index={index}
               isFirst={index === 0}
               isLast={index === layers.length - 1}
+              isMinimized={minimizedLayerIds.includes(layer.id)}
               onUpdate={updateLayer}
               onUpdateControl={updateLayerControl}
               onMove={moveLayer}
               onRemove={removeLayer}
+              onToggleMinimized={toggleLayerCard}
             />
           ))}
         </div>
@@ -1066,21 +1075,48 @@ function LayerEditor({
   index,
   isFirst,
   isLast,
+  isMinimized,
   onUpdate,
   onUpdateControl,
   onMove,
-  onRemove
+  onRemove,
+  onToggleMinimized
 }: {
   layer: VisualLayer;
   index: number;
   isFirst: boolean;
   isLast: boolean;
+  isMinimized: boolean;
   onUpdate: (id: string, updater: (layer: VisualLayer) => VisualLayer) => void;
   onUpdateControl: (id: string, key: keyof VisualLayerControls, value: number | boolean) => void;
   onMove: (id: string, direction: -1 | 1) => void;
   onRemove: (id: string) => void;
+  onToggleMinimized: (id: string) => void;
 }) {
   const modeOptions = Object.entries(MODE_LABELS).filter(([mode]) => MODE_KIND[mode as VisualLayerMode] === layer.kind);
+
+  if (isMinimized) {
+    return (
+      <section className={`layer-card layer-card-minimized ${layer.enabled ? '' : 'muted'}`}>
+        <div className="layer-card-summary">
+          <div>
+            <span>Layer {index + 1}</span>
+            <strong>{layer.name}</strong>
+          </div>
+          <button
+            className="layer-card-toggle"
+            type="button"
+            aria-label={`Maximize ${layer.name}`}
+            title={`Maximize ${layer.name}`}
+            aria-pressed="true"
+            onClick={() => onToggleMinimized(layer.id)}
+          >
+            +
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className={`layer-card ${layer.enabled ? '' : 'muted'}`}>
@@ -1097,6 +1133,16 @@ function LayerEditor({
           />
           <ControlLabel tooltip={CONTROL_TOOLTIPS.layerEnabled}>On</ControlLabel>
         </label>
+        <button
+          className="layer-card-toggle"
+          type="button"
+          aria-label={`Minimize ${layer.name}`}
+          title={`Minimize ${layer.name}`}
+          aria-pressed="false"
+          onClick={() => onToggleMinimized(layer.id)}
+        >
+          -
+        </button>
       </div>
 
       <div className="layer-controls">
