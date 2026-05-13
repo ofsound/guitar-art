@@ -180,6 +180,274 @@ const CONTROL_TOOLTIPS: Record<string, string> = {
     '3D Technique Shards. Feeds scaleAmount and directly scales shard length from frame.rms, techniqueIntensity, and frame.attack. Visual effect: higher values makes each shard longer and more fractured during strong attacks or confident technique detection.'
 };
 
+type ModeRoadmap = {
+  description: string;
+  dspMappings: string[];
+  controlMappings: string[];
+  visualMappings: string[];
+};
+
+const SHARED_FRAME_ROADMAP = [
+  'features.rms is compared with controls.gateThreshold to create frame.gateOpen.',
+  'controls.requiresGate sets gateMultiplier to 0 when closed; otherwise closed layers keep a 0.18 idle multiplier.',
+  'frame.rms, peak, low, mid, high, spectralFlux, brightness, noisiness, attack, vibratoDepth, and vibratoRate are clamp01(feature * controls.sensitivity * gateMultiplier).',
+  'frame.onset is clamp01(max(features.onset, features.spectralFlux) * controls.sensitivity * gateMultiplier).',
+  'frame.spectralCentroid is clamp01(features.spectralCentroid * (0.6 + controls.sensitivity * 0.4)).',
+  'frame.noteStability passes through features.noteStability.',
+  'frame.hue uses log2(features.pitchHz / 82.41) when features.pitchConfidence > 0.35, otherwise 0.08 + features.spectralCentroid * 0.52.',
+  'controls.smoothing applies one-pole smoothing with amount = 1 - controls.smoothing to every frame value above and to hue.'
+];
+
+const MODE_ROADMAPS: Record<VisualLayerMode, ModeRoadmap> = {
+  trails2d: {
+    description: 'A fading 2D brush trail where level, band balance, onset, pitch color, and note stability bend one moving ribbon system.',
+    dspMappings: [
+      'frame.gateOpen and frame.rms set the background fade: open gates reduce controls.trailFade by rms * 42%; closed gates multiply fade by 1.65.',
+      'frame.low and frame.rms set brush radius: 20 + frame.low * 280 * controls.scaleAmount + frame.rms * 160.',
+      'frame.mid and frame.onset set stroke count: 4 + floor(frame.mid * 18 + frame.onset * 24).',
+      'frame.high offsets the stroke angle and increases hue saturation.',
+      'frame.noteStability compresses/expands the y orbit, while frame.spectralCentroid expands y travel.',
+      'frame.mid and frame.high move the trail center through trailX/trailY drift.'
+    ],
+    controlMappings: [
+      'controls.trailSpeed -> controls.motionAmount -> stroke angular speed and trail center drift.',
+      'controls.brushSize -> controls.scaleAmount -> low/rms radius expansion.',
+      'controls.bloom -> controls.colorAmount -> per-stroke hue offsets.',
+      'controls.trailFade -> background erase alpha and trail persistence.'
+    ],
+    visualMappings: [
+      'Louder low energy produces wider arcs.',
+      'Mid energy and onsets add more simultaneous strokes.',
+      'High energy sharpens hue/saturation and makes the trail feel quicker.',
+      'Stable notes make the ribbon orbit more coherently around the center.'
+    ]
+  },
+  lineArt2d: {
+    description: 'A generative contour drawing where spectrum bands become rings, polygon points, radius, stroke weight, and color separation.',
+    dspMappings: [
+      'frame.gateOpen chooses the canvas fade alpha: 0.005 open and 0.012 closed.',
+      'frame.mid sets ring count through 2 + floor(frame.mid * 7 * controls.lineComplexity).',
+      'frame.high sets point count through 5 + floor(frame.high * 10 * controls.lineComplexity + controls.symmetry * 2).',
+      'frame.low sets base radius with min(width, height) * (0.08 + frame.low * 0.24 * controls.scaleAmount).',
+      'frame.onset adds 80px of radial expansion to each ring.',
+      'frame.rms sets lightness, alpha, and line width; frame.spectralCentroid and frame.mid modulate contour wobble.',
+      'frame.noteStability changes vertical contour scale, making stable notes more oval and sustained.'
+    ],
+    controlMappings: [
+      'controls.lineComplexity -> ring count, point count, and controls.scaleAmount.',
+      'controls.lineWeight -> final stroke width multiplier.',
+      'controls.lineDrift -> controls.motionAmount -> center drift and ring phase speed.',
+      'controls.symmetry -> point count and controls.colorAmount hue stepping.'
+    ],
+    visualMappings: [
+      'Midrange energy adds nested contours.',
+      'High-frequency energy increases angular detail.',
+      'Onsets inflate rings outward.',
+      'RMS makes lines brighter, thicker, and more opaque.'
+    ]
+  },
+  fretPulse2d: {
+    description: 'A 2D fretboard scope that maps detected strings, frets, voicing candidates, bends, and guitar events into pulsing note positions.',
+    dspMappings: [
+      'features.voicing[].fretNumber maps to x position across controls.fretSpan; features.voicing[].stringNumber maps to y string lanes.',
+      'features.voicing[].confidence and frame.attack set marker radius, marker alpha, and marker stroke width.',
+      'features.voicing[].pitchClass plus frame.hue sets marker color.',
+      'getStringEnergy combines voicing confidence, active features.stringNumber with features.pitchConfidence, and recent features.guitarEvents[].strength.',
+      'String line width uses stringEnergy and features.muteAmount.',
+      'String wobble uses stringEnergy, frame.vibratoDepth, time, and controls.motionAmount.',
+      'features.guitarEvents[].type, strength, t, fretNumber, and stringNumber create 1.3 second expanding pulse rings.',
+      'features.bendCents draws a bend curve when abs(bendCents) > 8 and string/fret are known.'
+    ],
+    controlMappings: [
+      'controls.fretSpan -> fret grid size and fret-to-x mapping.',
+      'controls.stringWarp -> controls.motionAmount -> string wobble depth/speed.',
+      'controls.pulseDecay -> controls.colorAmount -> guitar event pulse radius.',
+      'controls.markerSize -> controls.scaleAmount -> voicing marker size.'
+    ],
+    visualMappings: [
+      'Detected notes glow at their string/fret coordinates.',
+      'Recent plucks, strums, bends, mutes, chord changes, and noise radiate rings.',
+      'Palm muting thickens string lanes while damping resonance elsewhere.',
+      'Bends become curved pitch gestures above or below the note.'
+    ]
+  },
+  techniqueMap2d: {
+    description: 'A scrolling 2D technique history where six guitar-expression lanes and recent events are written as time columns.',
+    dspMappings: [
+      'Lane 1 maps features.pickNoise to pick/noise height.',
+      'Lane 2 maps features.muteAmount to mute height.',
+      'Lane 3 maps features.harmonicRatio to harmonic content height.',
+      'Lane 4 maps features.vibratoDepth to vibrato height.',
+      'Lane 5 maps abs(features.bendCents) / 180 to bend height.',
+      'Lane 6 maps features.chordConfidence to harmony confidence height.',
+      'features.logSpectrum supplies moving lane strokes by sampled spectrum bin.',
+      'features.guitarEvents[].type maps to lanes with eventLaneIndex; event strength and age set line alpha and width.',
+      'features.chroma[pitchClass] draws pitch-class strips for bins above 0.16.'
+    ],
+    controlMappings: [
+      'controls.scrollSpeed -> controls.motionAmount -> canvas shift and event age-to-x speed.',
+      'controls.laneGain -> controls.scaleAmount -> lane bar height multiplier.',
+      'controls.historyFade -> background erase alpha.',
+      'controls.eventAccent -> controls.colorAmount -> guitar event alpha multiplier.'
+    ],
+    visualMappings: [
+      'The newest technique data enters on the right and ages leftward.',
+      'Each horizontal lane isolates one guitar behavior.',
+      'Events appear as brighter vertical strikes in the lane for their event type.',
+      'Chroma adds thin pitch-class traces near the bottom of the map.'
+    ]
+  },
+  forms3d: {
+    description: 'A central 3D form where loudness, pitch class, spectrum brightness, note stability, and attacks drive material, mesh geometry, spin, and particles.',
+    dspMappings: [
+      'frame.spectralCentroid sets material warmth and roughness.',
+      'frame.high increases material saturation and y rotation speed.',
+      'frame.rms sets emissive strength and mesh scale.',
+      'frame.low adds extra mesh scale.',
+      'features.pitchConfidence > 0.42 and features.noteStability > 0.45 switch geometry by pitch class from features.pitchHz.',
+      'frame.mid, frame.high, and frame.noteStability control mesh rotation on x/y/z axes.',
+      'frame.onset > 0.2 triggers particle spawning; particles use frame.onset, frame.high, frame.peak, frame.low, frame.mid, and frame.hue.'
+    ],
+    controlMappings: [
+      'controls.formScale -> controls.scaleAmount -> mesh scale response.',
+      'controls.spin -> controls.motionAmount -> mesh rotation speed.',
+      'controls.particleBurst -> controls.colorAmount -> particle spawn count.',
+      'controls.morphRate is stored for the mode but currently has no direct renderer formula.'
+    ],
+    visualMappings: [
+      'Stable pitched notes choose one of twelve chromatic geometries.',
+      'Louder playing makes the form breathe larger and glow.',
+      'High/mid energy makes the form spin faster.',
+      'Attacks emit short-lived particles around the form.'
+    ]
+  },
+  spectralField3d: {
+    description: 'A 3D point field where seeded particles are assigned low, mid, or high bands and orbit based on spectral energy.',
+    dspMappings: [
+      'Each seed chooses frame.low, frame.mid, or frame.high as its bandValue.',
+      'bandValue and frame.onset set radial pulse: 0.35 + bandValue * 2.4 * controls.scaleAmount + frame.onset * 0.8.',
+      'frame.high adds group y rotation speed.',
+      'frame.spectralCentroid affects z radius and y-wave phase.',
+      'frame.mid increases y-wave amplitude.',
+      'frame.hue and band index set per-point color.'
+    ],
+    controlMappings: [
+      'controls.fieldSpread -> controls.scaleAmount -> point-cloud radius expansion.',
+      'controls.orbitSpeed -> controls.motionAmount -> group rotation and seed angle advance.',
+      'controls.pointSize -> controls.colorAmount and direct PointsMaterial size.',
+      'controls.density -> active seed count; inactive seeds move offscreen.'
+    ],
+    visualMappings: [
+      'Low, mid, and high bands occupy different vertical regions.',
+      'Onsets push the full field outward.',
+      'Brighter spectra create deeper z motion.',
+      'Density controls whether the map reads sparse or filled.'
+    ]
+  },
+  chromaConstellation3d: {
+    description: 'A 12-node pitch-class constellation where chroma, detected chord tones, bends, vibrato, and attacks form a rotating harmonic diagram.',
+    dspMappings: [
+      'features.chroma[pitchClass] sets each node radius, scale, opacity, lightness, and emissive strength.',
+      'features.chordRoot, chordQuality, and chordConfidence generate chord pitch classes for connecting lines.',
+      'Chord membership adds radius, scale, lightness, and emissive energy to chord-tone nodes.',
+      'features.chordConfidence sets line opacity and line color intensity.',
+      'frame.vibratoRate and abs(features.bendCents) set z-axis orbit speed.',
+      'frame.vibratoDepth and frame.brightness set node z displacement.',
+      'frame.attack or frame.onset spawns chroma particles from active pitch classes.'
+    ],
+    controlMappings: [
+      'controls.nodeScale -> controls.scaleAmount -> chroma radius spread.',
+      'controls.chordTension -> controls.colorAmount -> extra chord-tone radius.',
+      'controls.orbitSpeed -> controls.motionAmount -> harmonic orbit speed.',
+      'controls.particleBloom is stored for the mode but current particles use chroma, attack, onset, and opacity.'
+    ],
+    visualMappings: [
+      'Pitch classes brighten and move outward as chroma rises.',
+      'Detected chord tones connect into a harmonic polygon.',
+      'Bends and vibrato rotate the constellation.',
+      'Attacks burst particles from active pitch-class nodes.'
+    ]
+  },
+  guitarGlyph3d: {
+    description: 'A 3D fretboard glyph that combines voicing candidates, current string/fret detection, spectrum bars, technique events, and bend motion.',
+    dspMappings: [
+      'features.harmonicRatio sets string material opacity.',
+      'features.guitarTechniqueConfidence and frame.rms set overall group scale.',
+      'features.bendCents drives y rotation.',
+      'features.fretNumber and frame.attack light matching fret bars.',
+      'features.voicing[] maps candidate fretNumber/stringNumber to note node x/y positions.',
+      'features.voicing[].confidence sets note node z position, scale, opacity, lightness, and emissive energy.',
+      'features.voicing[].pitchClass plus frame.hue sets note-node color.',
+      'features.stringNumber marks the active candidate and adds frame.onset/attack emphasis.',
+      'features.logSpectrum[0..35] maps to 36 bar heights below the fretboard.',
+      'features.guitarEvents[] spawn event particles at event or current string/fret positions.'
+    ],
+    controlMappings: [
+      'controls.fretboardTilt -> controls.motionAmount and direct x rotation.',
+      'controls.fretSpan -> fret construction and candidate fret-to-x mapping.',
+      'controls.noteGlow -> controls.colorAmount -> note emissive color and emissiveIntensity.',
+      'controls.spectrumHeight -> controls.scaleAmount -> logSpectrum bar height.'
+    ],
+    visualMappings: [
+      'Detected notes become glowing nodes on the 3D neck.',
+      'Frequency content rises as a spectrum skyline under the strings.',
+      'Events throw particles from the played string/fret area.',
+      'Bends tilt the whole glyph laterally.'
+    ]
+  },
+  stringResonator3d: {
+    description: 'Six modeled 3D strings where voicing, active string detection, event energy, vibrato, bends, pick noise, and muting become wave motion.',
+    dspMappings: [
+      'features.guitarEvents[].stringNumber and strength raise per-string stored energy.',
+      'features.voicing[].confidence contributes voicingEnergy per string.',
+      'features.stringNumber with features.pitchConfidence contributes directEnergy to the active string.',
+      'features.muteAmount damps wave amplitude and speeds stored-energy decay.',
+      'abs(features.bendCents) / 180 contributes bend energy and y rotation.',
+      'frame.vibratoDepth, frame.vibratoRate, and features.pickNoise set wave amplitude/frequency.',
+      'features.fretNumber focuses the wave envelope around the fret position.',
+      'features.harmonicRatio, frame.rms, and frame.low affect material opacity and group scale.'
+    ],
+    controlMappings: [
+      'controls.stringCount -> number of visible modeled strings.',
+      'controls.resonanceDecay -> controls.motionAmount and per-string event-energy decay.',
+      'controls.waveDepth -> controls.scaleAmount -> displacement amplitude.',
+      'controls.bendSensitivity -> controls.colorAmount -> bend contribution to wave amplitude and rotation.'
+    ],
+    visualMappings: [
+      'Plucks and note events inject energy into individual strings.',
+      'Muted playing shortens and damps the waves.',
+      'Vibrato and bends visibly pull the string displacement.',
+      'Fret detection localizes the resonant envelope along the string length.'
+    ]
+  },
+  techniqueShard3d: {
+    description: 'A fractured 3D shard field where technique confidence, pick noise, muting, bends, harmonic content, chroma, and chord confidence drive scatter and fracture.',
+    dspMappings: [
+      'techniqueIntensity = clamp01(guitarTechniqueConfidence * 0.55 + max(pickNoise, muteAmount, vibratoDepth, abs(bendCents)/180, chordConfidence, harmonicRatio) * 0.45).',
+      'features.pickNoise adds rough x displacement, spin speed, and shard x scale.',
+      'features.muteAmount pulls shards backward in z and increases shard z scale.',
+      'abs(features.bendCents) / 180 bends angular placement and increases group rotation.',
+      'features.harmonicRatio and frame.mid set shard scatter radius.',
+      'frame.low affects shard vertical spread; frame.brightness affects z radius.',
+      'frame.rms, frame.attack, and techniqueIntensity set shard length/fracture scale.',
+      'features.guitarTechnique selects hue bias; features.guitarTechniqueConfidence raises saturation and opacity.',
+      'features.chroma[pitchClass] and features.chordConfidence draw harmonic rings below the shards.'
+    ],
+    controlMappings: [
+      'controls.shardCount -> active instanced shard count.',
+      'controls.scatter -> controls.colorAmount -> shard radius multiplier.',
+      'controls.spin -> controls.motionAmount -> group rotation and per-shard spin.',
+      'controls.fracture -> controls.scaleAmount -> shard length from rms, attack, and techniqueIntensity.'
+    ],
+    visualMappings: [
+      'Confident technique detection makes fragments longer, brighter, and more saturated.',
+      'Pick noise roughens placement and widens shards.',
+      'Muting compacts the field while making shard forms chunkier.',
+      'Chroma and chord confidence draw a pitch ring underneath the fracture field.'
+    ]
+  }
+};
+
 type TunerReading = {
   active: boolean;
   noteName: string;
@@ -960,6 +1228,7 @@ function LayerEditor({
         </select>
       </div>
 
+      <LayerModeRoadmap layer={layer} />
       <ModeSpecificControls layer={layer} onUpdateControl={onUpdateControl} />
       <LayerSlider label="Input drive" tooltip={CONTROL_TOOLTIPS.sensitivity} value={layer.controls.sensitivity} min={0.1} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'sensitivity', value)} />
       <LayerSlider label="Response" tooltip={CONTROL_TOOLTIPS.smoothing} value={layer.controls.smoothing} min={0} max={0.95} step={0.01} onChange={(value) => onUpdateControl(layer.id, 'smoothing', value)} />
@@ -987,6 +1256,43 @@ function LayerEditor({
         </button>
       </div>
     </section>
+  );
+}
+
+function LayerModeRoadmap({ layer }: { layer: VisualLayer }) {
+  const roadmap = MODE_ROADMAPS[layer.mode];
+
+  return (
+    <details className="layer-roadmap" open>
+      <summary>
+        <span>DSP map</span>
+        <strong>{MODE_LABELS[layer.mode]}</strong>
+      </summary>
+      <p>{roadmap.description}</p>
+      <div className="roadmap-current">
+        <span>Drive {layer.controls.sensitivity.toFixed(2)}x</span>
+        <span>Response {layer.controls.smoothing.toFixed(2)}</span>
+        <span>Gate {layer.controls.gateThreshold.toFixed(3)}</span>
+        <span>{layer.controls.requiresGate ? 'Hard gate' : 'Idle drift'}</span>
+      </div>
+      <RoadmapList title="Frame prep" items={SHARED_FRAME_ROADMAP} />
+      <RoadmapList title="DSP to visual features" items={roadmap.dspMappings} />
+      <RoadmapList title="Layer controls" items={roadmap.controlMappings} />
+      <RoadmapList title="Resulting visual behavior" items={roadmap.visualMappings} />
+    </details>
+  );
+}
+
+function RoadmapList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="roadmap-section">
+      <span>{title}</span>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
