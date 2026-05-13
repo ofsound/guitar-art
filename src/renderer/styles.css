@@ -427,6 +427,8 @@ input[type='range'] {
 .layer-stack {
   display: grid;
   flex: 1;
+  align-content: start;
+  grid-auto-rows: max-content;
   min-height: 0;
   padding-bottom: 86px;
   overflow-y: auto;
@@ -462,6 +464,7 @@ input[type='range'] {
 }
 
 .layer-card-minimized {
+  align-self: start;
   gap: 0;
   min-height: 44px;
   padding: 7px 9px;
