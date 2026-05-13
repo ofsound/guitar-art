@@ -32,15 +32,15 @@ input {
 }
 
 .app-shell.input-minimized {
-  --input-rail-width: 96px;
+  --input-rail-width: 54px;
 }
 
 .app-shell.layers-minimized {
-  --layer-rail-width: 96px;
+  --layer-rail-width: 54px;
 }
 
 .app-shell.dsp-minimized {
-  --capture-rail-width: 110px;
+  --capture-rail-width: 54px;
 }
 
 .control-rail,
@@ -72,7 +72,7 @@ input {
 
 .rail-minimized {
   gap: 0;
-  padding: 14px 10px;
+  padding: 14px 9px;
   overflow: hidden;
 }
 
@@ -359,18 +359,28 @@ input[type='range'] {
 
 .rail-minimized .rail-header {
   grid-template-columns: 1fr;
-  gap: 8px;
+  gap: 12px;
+}
+
+.rail-minimized .rail-header > div:first-child {
+  display: grid;
+  place-items: center;
+  min-height: 94px;
 }
 
 .rail-minimized .rail-kicker {
-  overflow: hidden;
+  display: block;
+  width: max-content;
+  max-width: none;
   text-align: center;
   text-overflow: clip;
   white-space: nowrap;
+  transform: rotate(-90deg);
 }
 
 .rail-minimized .rail-toggle {
   width: 100%;
+  min-width: 0;
 }
 
 .rail-kicker,
