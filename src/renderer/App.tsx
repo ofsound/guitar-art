@@ -1140,7 +1140,7 @@ function LayerSlider({
 
 function ControlLabel({ children, tooltip, value }: { children: ReactNode; tooltip?: string; value?: ReactNode }) {
   return (
-    <span className={`control-label${tooltip ? ' has-tooltip' : ''}`} tabIndex={tooltip ? 0 : undefined} title={tooltip}>
+    <span className={`control-label${tooltip ? ' has-tooltip' : ''}`} tabIndex={tooltip ? 0 : undefined}>
       <span className="control-label-row">
         <span className="control-label-name">{children}</span>
         {value !== undefined ? <span className="control-label-value">{value}</span> : null}
