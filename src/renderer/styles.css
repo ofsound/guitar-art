@@ -358,14 +358,18 @@ input[type='range'] {
 }
 
 .rail-minimized .rail-header {
+  display: flex;
+  flex-direction: column-reverse;
   grid-template-columns: 1fr;
   gap: 12px;
+  align-items: center;
 }
 
 .rail-minimized .rail-header > div:first-child {
   display: grid;
   place-items: center;
-  min-height: 94px;
+  width: 100%;
+  min-height: 160px;
 }
 
 .rail-minimized .rail-kicker {
@@ -376,6 +380,7 @@ input[type='range'] {
   text-overflow: clip;
   white-space: nowrap;
   transform: rotate(-90deg);
+  transform-origin: center;
 }
 
 .rail-minimized .rail-toggle {
