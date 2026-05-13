@@ -459,7 +459,11 @@ impl AudioEngine {
             run_dsp(consumer, latest, dsp_stop, dsp_config, dsp_params);
         });
 
-        let channel_index = config.channel_index.min(channels.saturating_sub(1) as u32) as usize;
+        let channel_index = if config.channel_index < channels as u32 {
+            Some(config.channel_index as usize)
+        } else {
+            None
+        };
         let err_fn = |error| eprintln!("CPAL stream error: {error}");
         let stream = match sample_format {
             cpal::SampleFormat::F32 => build_input_stream::<f32>(
@@ -611,7 +615,7 @@ fn build_input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
-    channel_index: usize,
+    channel_index: Option<usize>,
     params: Arc<LiveAudioParams>,
     mut producer: Producer<f32>,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
@@ -625,9 +629,17 @@ where
         move |data: &[T], _| {
             let input_gain = params.input_gain();
             for frame in data.chunks(channels) {
-                if let Some(sample) = frame.get(channel_index) {
-                    let value = sample.to_sample::<f32>() * input_gain;
-                    let _ = producer.push(value);
+                let sample = channel_index
+                    .and_then(|index| frame.get(index))
+                    .or_else(|| {
+                        frame.iter().max_by(|a, b| {
+                            let a = a.to_sample::<f32>().abs();
+                            let b = b.to_sample::<f32>().abs();
+                            a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                    });
+                if let Some(sample) = sample {
+                    let _ = producer.push(sample.to_sample::<f32>() * input_gain);
                 }
             }
         },
@@ -684,7 +696,7 @@ fn run_dsp(
                 &mut fft_buffer,
             );
             features.t = elapsed;
-            last_rms = features.rms as f32;
+            last_rms = rms(samples);
             stable_pitch = features.pitch_hz.map(|pitch| pitch as f32);
             note_stability = features.note_stability as f32;
             *latest.lock().unwrap() = features;

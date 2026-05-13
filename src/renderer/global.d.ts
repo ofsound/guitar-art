@@ -5,6 +5,8 @@ import type {
   AudioParamsUpdate,
   AudioStartConfig,
   AudioStatus,
+  MediaExportRequest,
+  MediaExportResult,
   PngExportRequest,
   PngExportResult
 } from '../shared/audio';
@@ -23,6 +25,7 @@ declare global {
       };
       art: {
         exportPng: (request: PngExportRequest) => Promise<PngExportResult>;
+        exportMedia: (request: MediaExportRequest) => Promise<MediaExportResult>;
       };
     };
   }

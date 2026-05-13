@@ -156,6 +156,43 @@ export type VisualLayerControls = {
   colorAmount: number;
   opacity: number;
   requiresGate: boolean;
+  trailFade?: number;
+  trailSpeed?: number;
+  brushSize?: number;
+  bloom?: number;
+  lineComplexity?: number;
+  lineDrift?: number;
+  lineWeight?: number;
+  symmetry?: number;
+  fretSpan?: number;
+  stringWarp?: number;
+  pulseDecay?: number;
+  markerSize?: number;
+  scrollSpeed?: number;
+  laneGain?: number;
+  historyFade?: number;
+  eventAccent?: number;
+  formScale?: number;
+  morphRate?: number;
+  spin?: number;
+  particleBurst?: number;
+  fieldSpread?: number;
+  orbitSpeed?: number;
+  pointSize?: number;
+  density?: number;
+  nodeScale?: number;
+  chordTension?: number;
+  particleBloom?: number;
+  fretboardTilt?: number;
+  noteGlow?: number;
+  spectrumHeight?: number;
+  stringCount?: number;
+  resonanceDecay?: number;
+  waveDepth?: number;
+  bendSensitivity?: number;
+  shardCount?: number;
+  scatter?: number;
+  fracture?: number;
 };
 
 export type VisualLayer = {
@@ -180,6 +217,18 @@ export type PngExportRequest = {
 };
 
 export type PngExportResult = {
+  canceled: boolean;
+  filePath?: string;
+};
+
+export type MediaExportRequest = {
+  dataUrl: string;
+  suggestedName: string;
+  mimeType: string;
+  extension: 'png' | 'webm';
+};
+
+export type MediaExportResult = {
   canceled: boolean;
   filePath?: string;
 };
@@ -247,7 +296,44 @@ export const DEFAULT_LAYER_CONTROLS: VisualLayerControls = {
   scaleAmount: 1,
   colorAmount: 1,
   opacity: 0.9,
-  requiresGate: false
+  requiresGate: false,
+  trailFade: 0.028,
+  trailSpeed: 1.15,
+  brushSize: 1,
+  bloom: 1,
+  lineComplexity: 1,
+  lineDrift: 1,
+  lineWeight: 1,
+  symmetry: 1,
+  fretSpan: 12,
+  stringWarp: 1,
+  pulseDecay: 1,
+  markerSize: 1,
+  scrollSpeed: 1,
+  laneGain: 1,
+  historyFade: 0.035,
+  eventAccent: 1,
+  formScale: 1,
+  morphRate: 1,
+  spin: 1,
+  particleBurst: 1,
+  fieldSpread: 1,
+  orbitSpeed: 1,
+  pointSize: 1,
+  density: 1,
+  nodeScale: 1,
+  chordTension: 1,
+  particleBloom: 1,
+  fretboardTilt: 1,
+  noteGlow: 1,
+  spectrumHeight: 1,
+  stringCount: 6,
+  resonanceDecay: 1,
+  waveDepth: 1,
+  bendSensitivity: 1,
+  shardCount: 1,
+  scatter: 1,
+  fracture: 1
 };
 
 export const DEFAULT_VISUAL_LAYERS: VisualLayer[] = [
@@ -257,7 +343,7 @@ export const DEFAULT_VISUAL_LAYERS: VisualLayer[] = [
     kind: '2d',
     mode: 'trails2d',
     enabled: true,
-    controls: { ...DEFAULT_LAYER_CONTROLS, opacity: 0.8 }
+    controls: { ...DEFAULT_LAYER_CONTROLS, opacity: 0.8, trailFade: 0.018, trailSpeed: 1.35, brushSize: 1.1, bloom: 1.25 }
   },
   {
     id: 'default-3d-forms',
@@ -265,6 +351,6 @@ export const DEFAULT_VISUAL_LAYERS: VisualLayer[] = [
     kind: '3d',
     mode: 'forms3d',
     enabled: true,
-    controls: { ...DEFAULT_LAYER_CONTROLS, requiresGate: true, opacity: 0.95 }
+    controls: { ...DEFAULT_LAYER_CONTROLS, requiresGate: true, opacity: 0.95, formScale: 1.1, morphRate: 1.15, spin: 0.9, particleBurst: 1.2 }
   }
 ];

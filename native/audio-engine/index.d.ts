@@ -65,25 +65,6 @@ export interface AudioFeatures {
   guitarEvents: Array<GuitarEvent>
 }
 
-export interface GuitarVoicingCandidate {
-  stringNumber: number
-  fretNumber: number
-  pitchClass: number
-  confidence: number
-}
-
-export interface GuitarEvent {
-  id: number
-  t: number
-  type: string
-  strength: number
-  noteName?: string
-  pitchHz?: number
-  stringNumber?: number
-  fretNumber?: number
-  chordName?: string
-}
-
 export interface AudioParamsUpdate {
   inputGain?: number
   gateThreshold?: number
@@ -98,4 +79,23 @@ export interface AudioStartConfig {
   featureRateHz: number
   inputGain: number
   gateThreshold: number
+}
+
+export interface GuitarEvent {
+  id: number
+  t: number
+  type: string
+  strength: number
+  noteName?: string
+  pitchHz?: number
+  stringNumber?: number
+  fretNumber?: number
+  chordName?: string
+}
+
+export interface GuitarVoicingCandidate {
+  stringNumber: number
+  fretNumber: number
+  pitchClass: number
+  confidence: number
 }

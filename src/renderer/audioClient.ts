@@ -8,6 +8,8 @@ import type {
   GuitarEvent,
   GuitarTechnique,
   GuitarVoicingCandidate,
+  MediaExportRequest,
+  MediaExportResult,
   PngExportRequest,
   PngExportResult
 } from '../shared/audio';
@@ -100,6 +102,13 @@ const fallbackArtClient: ArtClient = {
     const anchor = document.createElement('a');
     anchor.href = request.dataUrl;
     anchor.download = request.suggestedName.endsWith('.png') ? request.suggestedName : `${request.suggestedName}.png`;
+    anchor.click();
+    return { canceled: false };
+  },
+  exportMedia: async (request: MediaExportRequest): Promise<MediaExportResult> => {
+    const anchor = document.createElement('a');
+    anchor.href = request.dataUrl;
+    anchor.download = request.suggestedName.endsWith(`.${request.extension}`) ? request.suggestedName : `${request.suggestedName}.${request.extension}`;
     anchor.click();
     return { canceled: false };
   }

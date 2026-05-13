@@ -121,11 +121,14 @@ try {
     const body = await page.locator('body').innerText().catch(() => '');
     throw new Error(`Renderer did not mount canvas.\nErrors:\n${errors.join('\n')}\nBody:\n${body}\n${error}`);
   }
-  const canvasCount = await page.locator('.visual-host canvas').count();
+  const canvasCount = await page.locator('.visual-3d-canvas').count();
+  const twoDCanvasCount = await page.locator('.visual-2d-layer').count();
   const meterCount = await page.locator('.meter').count();
   const tunerCount = await page.locator('.tuner-panel').count();
   const tunerNeedleCount = await page.locator('.tuner-needle').count();
-  const recordButtonCount = await page.getByRole('button', { name: 'Record' }).count();
+  const snapshotButtonCount = await page.getByRole('button', { name: 'Snapshot' }).count();
+  const cumulativeButtonCount = await page.getByRole('button', { name: 'Cumulative' }).count();
+  const webmButtonCount = await page.getByRole('button', { name: 'WebM' }).count();
   const stopButtonCount = await page.getByRole('button', { name: 'Stop' }).count();
   const spectrumPanelCount = await page.locator('.spectrum-bars').count();
   const guitarGlyphOptionCount = await page.locator('select option[value="guitarGlyph3d"]').count();
@@ -142,14 +145,16 @@ try {
   if (errors.length > 0) {
     throw new Error(`Renderer console errors:\n${errors.join('\n')}`);
   }
-  if (canvasCount < 1 || meterCount < 9) {
-    throw new Error(`Unexpected renderer shape: canvas=${canvasCount} meters=${meterCount}`);
+  if (canvasCount !== 1 || twoDCanvasCount < 1 || meterCount < 9) {
+    throw new Error(`Unexpected renderer shape: canvas=${canvasCount} twoD=${twoDCanvasCount} meters=${meterCount}`);
   }
   if (tunerCount !== 1 || tunerNeedleCount !== 1) {
     throw new Error(`Unexpected tuner shape: panels=${tunerCount} needles=${tunerNeedleCount}`);
   }
-  if (recordButtonCount !== 1 || stopButtonCount < 2) {
-    throw new Error(`Unexpected recording controls: record=${recordButtonCount} stop=${stopButtonCount}`);
+  if (snapshotButtonCount !== 1 || cumulativeButtonCount !== 1 || webmButtonCount !== 1 || stopButtonCount < 2) {
+    throw new Error(
+      `Unexpected recording controls: snapshot=${snapshotButtonCount} cumulative=${cumulativeButtonCount} webm=${webmButtonCount} stop=${stopButtonCount}`
+    );
   }
   if (spectrumPanelCount !== 1 || guitarGlyphOptionCount < 1) {
     throw new Error(`Unexpected guitar diagnostics/glyph controls: spectrum=${spectrumPanelCount} glyphOptions=${guitarGlyphOptionCount}`);
@@ -163,19 +168,33 @@ try {
     throw new Error(`Canvas appears blank: desktop=${JSON.stringify(desktopPixelStats)} mobile=${JSON.stringify(mobilePixelStats)}`);
   }
 
-  console.log(JSON.stringify({ canvasCount, meterCount, tunerCount, tunerNeedleCount, recordButtonCount, stopButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, techniqueMapOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
+  console.log(JSON.stringify({ canvasCount, twoDCanvasCount, meterCount, tunerCount, tunerNeedleCount, snapshotButtonCount, cumulativeButtonCount, webmButtonCount, stopButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, techniqueMapOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
 } finally {
   server.kill('SIGTERM');
 }
 
 async function getCanvasPixelStats(page) {
-  const canvas = await page.locator('.visual-host canvas').elementHandle();
-  return canvas.evaluate((node) => {
+  const host = await page.locator('.visual-host').elementHandle();
+  return host.evaluate((node) => {
     const sample = document.createElement('canvas');
     sample.width = 64;
     sample.height = 64;
     const context = sample.getContext('2d');
-    context.drawImage(node, 0, 0, sample.width, sample.height);
+    context.fillStyle = '#07090a';
+    context.fillRect(0, 0, sample.width, sample.height);
+    const canvases = Array.from(node.querySelectorAll('canvas')).sort((a, b) => {
+      const az = Number(getComputedStyle(a).zIndex || 0);
+      const bz = Number(getComputedStyle(b).zIndex || 0);
+      return az - bz;
+    });
+    canvases.forEach((canvas) => {
+      if (getComputedStyle(canvas).display === 'none') {
+        return;
+      }
+      context.globalAlpha = Number(getComputedStyle(canvas).opacity || 1);
+      context.drawImage(canvas, 0, 0, sample.width, sample.height);
+    });
+    context.globalAlpha = 1;
     const data = context.getImageData(0, 0, sample.width, sample.height).data;
     let lit = 0;
     let sum = 0;

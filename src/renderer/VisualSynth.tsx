@@ -43,6 +43,13 @@ type LayerFrame = {
   hue: number;
 };
 
+export type VisualRenderQuality = 'low' | 'medium' | 'high';
+
+const TWO_D_QUALITY_LIMITS: Record<Exclude<VisualRenderQuality, 'high'>, { width: number; height: number }> = {
+  low: { width: 854, height: 480 },
+  medium: { width: 1280, height: 720 }
+};
+
 type BaseLayerContext = {
   id: string;
   mode: VisualLayer['mode'];
@@ -54,9 +61,6 @@ type TwoDLayerContext = BaseLayerContext & {
   type: '2d';
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
-  texture: THREE.CanvasTexture;
-  material: THREE.MeshBasicMaterial;
-  plane: THREE.Mesh;
   trailX: number;
   trailY: number;
   seed: number;
@@ -162,6 +166,15 @@ type RecordingState = {
   context: CanvasRenderingContext2D;
   frameCount: number;
   startedAt: number;
+  accumulationAlpha: number;
+  transparentBackground: boolean;
+};
+
+export type VisualCaptureOptions = {
+  width: number;
+  height: number;
+  transparentBackground: boolean;
+  accumulationAlpha?: number;
 };
 
 export type VisualRecordingResult = {
@@ -172,29 +185,58 @@ export type VisualRecordingResult = {
   durationMs: number;
 };
 
+export type VisualMediaRecordingResult = {
+  dataUrl: string;
+  mimeType: string;
+  extension: 'webm';
+  durationMs: number;
+};
+
 export type VisualSynthHandle = {
-  startRecording: () => void;
+  captureStill: (options: VisualCaptureOptions) => VisualRecordingResult | null;
+  startRecording: (options: VisualCaptureOptions) => void;
   stopRecording: () => VisualRecordingResult | null;
+  startVideoRecording: (options: VisualCaptureOptions) => Promise<void>;
+  stopVideoRecording: () => Promise<VisualMediaRecordingResult | null>;
 };
 
 export const VisualSynth = forwardRef<VisualSynthHandle, {
   featuresRef: React.MutableRefObject<AudioFeatures>;
   layers: VisualLayer[];
-}>(function VisualSynth({ featuresRef, layers }, ref) {
+  transparentBackground: boolean;
+  renderQuality: VisualRenderQuality;
+}>(function VisualSynth({ featuresRef, layers, transparentBackground, renderQuality }, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const layersRef = useRef(layers);
-  const startRecordingRef = useRef<() => void>(() => undefined);
+  const transparentBackgroundRef = useRef(transparentBackground);
+  const renderQualityRef = useRef(renderQuality);
+  const startRecordingRef = useRef<(options: VisualCaptureOptions) => void>(() => undefined);
+  const captureStillRef = useRef<(options: VisualCaptureOptions) => VisualRecordingResult | null>(() => null);
+  const startVideoRecordingRef = useRef<(options: VisualCaptureOptions) => Promise<void>>(async () => undefined);
   const stopRecordingRef = useRef<() => VisualRecordingResult | null>(() => null);
+  const stopVideoRecordingRef = useRef<() => Promise<VisualMediaRecordingResult | null>>(async () => null);
 
   useEffect(() => {
     layersRef.current = layers;
   }, [layers]);
 
+  useEffect(() => {
+    transparentBackgroundRef.current = transparentBackground;
+  }, [transparentBackground]);
+
+  useEffect(() => {
+    renderQualityRef.current = renderQuality;
+    window.dispatchEvent(new Event('resize'));
+  }, [renderQuality]);
+
   useImperativeHandle(
     ref,
     () => ({
-      startRecording: () => startRecordingRef.current(),
-      stopRecording: () => stopRecordingRef.current()
+      captureStill: (options) => captureStillRef.current(options),
+      startRecording: (options) => startRecordingRef.current(options),
+      stopRecording: () => stopRecordingRef.current(),
+      startVideoRecording: (options) => startVideoRecordingRef.current(options),
+      stopVideoRecording: () => stopVideoRecordingRef.current()
     }),
     []
   );
@@ -212,9 +254,13 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
     camera.position.set(0, 1.2, 7.5);
 
     const renderer = createRenderer();
+    renderer.domElement.className = 'visual-3d-canvas';
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(host.clientWidth, host.clientHeight);
     renderer.setClearColor(0x07090a, 1);
+    const twoDHost = document.createElement('div');
+    twoDHost.className = 'visual-2d-stack';
+    host.appendChild(twoDHost);
     host.appendChild(renderer.domElement);
 
     const key = new THREE.PointLight(0xb6fbff, 26, 30);
@@ -227,22 +273,85 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
 
     const layerContexts = new Map<string, LayerContext>();
     const recordingRef = { current: null as RecordingState | null };
+    const videoRef = { current: null as {
+      recorder: MediaRecorder;
+      chunks: Blob[];
+      startedAt: number;
+      stream: MediaStream;
+      canvas: HTMLCanvasElement;
+      context: CanvasRenderingContext2D;
+      transparentBackground: boolean;
+    } | null };
     let animation = 0;
     let last = performance.now();
 
-    startRecordingRef.current = () => {
+    captureStillRef.current = (options) => {
       const canvas = document.createElement('canvas');
-      canvas.width = renderer.domElement.width;
-      canvas.height = renderer.domElement.height;
-      const context = canvas.getContext('2d', { alpha: false })!;
-      context.fillStyle = '#07090a';
-      context.fillRect(0, 0, canvas.width, canvas.height);
+      canvas.width = options.width;
+      canvas.height = options.height;
+      const context = canvas.getContext('2d', { alpha: options.transparentBackground })!;
+      if (!options.transparentBackground) {
+        context.fillStyle = '#07090a';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      drawVisualFrameToContext(context, canvas.width, canvas.height, layerContexts, renderer.domElement, options.transparentBackground);
+      return {
+        dataUrl: canvas.toDataURL('image/png'),
+        width: canvas.width,
+        height: canvas.height,
+        frameCount: 1,
+        durationMs: 0
+      };
+    };
+
+    startRecordingRef.current = (options) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = options.width;
+      canvas.height = options.height;
+      const context = canvas.getContext('2d', { alpha: options.transparentBackground })!;
+      if (!options.transparentBackground) {
+        context.fillStyle = '#07090a';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }
       recordingRef.current = {
         canvas,
         context,
         frameCount: 0,
+        startedAt: performance.now(),
+        accumulationAlpha: options.accumulationAlpha ?? 0.16,
+        transparentBackground: options.transparentBackground
+      };
+    };
+
+    startVideoRecordingRef.current = async (options) => {
+      if (videoRef.current) {
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = options.width;
+      canvas.height = options.height;
+      const context = canvas.getContext('2d', { alpha: options.transparentBackground })!;
+      const stream = canvas.captureStream(60);
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+        ? 'video/webm;codecs=vp9'
+        : 'video/webm';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      videoRef.current = {
+        recorder,
+        chunks,
+        stream,
+        canvas,
+        context,
+        transparentBackground: options.transparentBackground,
         startedAt: performance.now()
       };
+      recorder.start(250);
     };
 
     stopRecordingRef.current = () => {
@@ -260,6 +369,33 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
       };
     };
 
+    stopVideoRecordingRef.current = async () => {
+      const video = videoRef.current;
+      videoRef.current = null;
+      if (!video) {
+        return null;
+      }
+      const result = await new Promise<VisualMediaRecordingResult | null>((resolve) => {
+        video.recorder.onstop = async () => {
+          video.stream.getTracks().forEach((track) => track.stop());
+          const blob = new Blob(video.chunks, { type: video.recorder.mimeType || 'video/webm' });
+          if (!blob.size) {
+            resolve(null);
+            return;
+          }
+          const dataUrl = await blobToDataUrl(blob);
+          resolve({
+            dataUrl,
+            mimeType: blob.type || 'video/webm',
+            extension: 'webm',
+            durationMs: Math.max(0, performance.now() - video.startedAt)
+          });
+        };
+        video.recorder.stop();
+      });
+      return result;
+    };
+
     const resize = () => {
       const width = Math.max(1, host.clientWidth);
       const height = Math.max(1, host.clientHeight);
@@ -268,20 +404,24 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
       renderer.setSize(width, height);
       layerContexts.forEach((context) => {
         if (context.type === '2d') {
-          resizeCanvasLayer(context, width, height);
+          resizeCanvasLayer(context, width, height, renderQualityRef.current);
         }
       });
     };
     resize();
     window.addEventListener('resize', resize);
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(host);
 
     const animate = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const features = featuresRef.current;
       const activeLayers = layersRef.current;
+      const hasVisible2DLayers = activeLayers.some((layer) => layer.enabled && is2DLayerMode(layer.mode));
+      renderer.setClearColor(0x07090a, transparentBackgroundRef.current || hasVisible2DLayers ? 0 : 1);
 
-      reconcileLayerContexts(scene, layerContexts, activeLayers, host.clientWidth, host.clientHeight);
+      reconcileLayerContexts(scene, twoDHost, layerContexts, activeLayers, host.clientWidth, host.clientHeight, renderQualityRef.current);
 
       let aggregateLow = 0;
       let aggregateMid = 0;
@@ -335,7 +475,8 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
       camera.lookAt(0, 0, 0);
 
       renderer.render(scene, camera);
-      captureRecordingFrame(recordingRef.current, renderer.domElement);
+      captureRecordingFrame(recordingRef.current, renderer.domElement, layerContexts);
+      captureVideoFrame(videoRef.current, renderer.domElement, layerContexts);
       animation = requestAnimationFrame(animate);
     };
 
@@ -344,8 +485,12 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
     return () => {
       cancelAnimationFrame(animation);
       window.removeEventListener('resize', resize);
+      resizeObserver.disconnect();
       startRecordingRef.current = () => undefined;
       stopRecordingRef.current = () => null;
+      stopVideoRecordingRef.current = async () => null;
+      startVideoRecordingRef.current = async () => undefined;
+      captureStillRef.current = () => null;
       layerContexts.forEach((context) => context.dispose());
       layerContexts.clear();
       try {
@@ -356,6 +501,9 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
       if (renderer.domElement.parentElement === host) {
         host.removeChild(renderer.domElement);
       }
+      if (twoDHost.parentElement === host) {
+        host.removeChild(twoDHost);
+      }
     };
   }, [featuresRef]);
 
@@ -364,10 +512,12 @@ export const VisualSynth = forwardRef<VisualSynthHandle, {
 
 function reconcileLayerContexts(
   scene: THREE.Scene,
+  twoDHost: HTMLElement,
   contexts: Map<string, LayerContext>,
   layers: VisualLayer[],
   width: number,
-  height: number
+  height: number,
+  renderQuality: VisualRenderQuality
 ) {
   const liveIds = new Set(layers.map((layer) => layer.id));
   contexts.forEach((context, id) => {
@@ -388,15 +538,22 @@ function reconcileLayerContexts(
       contexts.delete(layer.id);
     }
 
-    const context = createLayerContext(scene, layer, width, height);
+    const context = createLayerContext(scene, twoDHost, layer, width, height, renderQuality);
     contexts.set(layer.id, context);
     setLayerRenderOrder(context, index);
   });
 }
 
-function createLayerContext(scene: THREE.Scene, layer: VisualLayer, width: number, height: number): LayerContext {
-  if (layer.mode === 'trails2d' || layer.mode === 'lineArt2d' || layer.mode === 'fretPulse2d' || layer.mode === 'techniqueMap2d') {
-    return create2DLayerContext(scene, layer, width, height);
+function createLayerContext(
+  scene: THREE.Scene,
+  twoDHost: HTMLElement,
+  layer: VisualLayer,
+  width: number,
+  height: number,
+  renderQuality: VisualRenderQuality
+): LayerContext {
+  if (is2DLayerMode(layer.mode)) {
+    return create2DLayerContext(twoDHost, layer, width, height, renderQuality);
   }
   if (layer.mode === 'forms3d') {
     return createFormsLayerContext(scene, layer);
@@ -416,20 +573,21 @@ function createLayerContext(scene: THREE.Scene, layer: VisualLayer, width: numbe
   return createSpectralFieldLayerContext(scene, layer);
 }
 
-function create2DLayerContext(scene: THREE.Scene, layer: VisualLayer, width: number, height: number): TwoDLayerContext {
+function is2DLayerMode(mode: VisualLayer['mode']): boolean {
+  return mode === 'trails2d' || mode === 'lineArt2d' || mode === 'fretPulse2d' || mode === 'techniqueMap2d';
+}
+
+function create2DLayerContext(
+  twoDHost: HTMLElement,
+  layer: VisualLayer,
+  width: number,
+  height: number,
+  renderQuality: VisualRenderQuality
+): TwoDLayerContext {
   const canvas = document.createElement('canvas');
+  canvas.className = 'visual-2d-layer';
   const context = canvas.getContext('2d', { alpha: true })!;
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  const material = new THREE.MeshBasicMaterial({
-    map: texture,
-    transparent: true,
-    depthWrite: false,
-    opacity: layer.controls.opacity
-  });
-  const plane = new THREE.Mesh(new THREE.PlaneGeometry(18, 10), material);
-  plane.position.set(0, 0, -2.8);
-  scene.add(plane);
+  twoDHost.appendChild(canvas);
 
   const layerContext: TwoDLayerContext = {
     id: layer.id,
@@ -437,21 +595,17 @@ function create2DLayerContext(scene: THREE.Scene, layer: VisualLayer, width: num
     type: '2d',
     canvas,
     context,
-    texture,
-    material,
-    plane,
     trailX: 0.5,
     trailY: 0.5,
     seed: Math.random() * 1000,
     smoothed: createEmptyFrame(),
     dispose: () => {
-      scene.remove(plane);
-      plane.geometry.dispose();
-      material.dispose();
-      texture.dispose();
+      if (canvas.parentElement === twoDHost) {
+        twoDHost.removeChild(canvas);
+      }
     }
   };
-  resizeCanvasLayer(layerContext, width, height);
+  resizeCanvasLayer(layerContext, width, height, renderQuality);
   return layerContext;
 }
 
@@ -677,10 +831,11 @@ function createGuitarGlyphLayerContext(scene: THREE.Scene, layer: VisualLayer): 
     transparent: true,
     opacity: layer.controls.opacity * 0.5
   });
-  for (let fret = 0; fret <= 12; fret += 1) {
+  const fretSpan = Math.max(5, Math.min(24, Math.round(layer.controls.fretSpan ?? 12)));
+  for (let fret = 0; fret <= fretSpan; fret += 1) {
     const bar = new THREE.Mesh(fretGeometry, fretMaterial.clone());
-    bar.position.set(-2.35 + fret * 0.39, 0, -0.02);
-    bar.scale.x = fret === 0 || fret === 12 ? 1.8 : 1;
+    bar.position.set(fretToX(fret, fretSpan), 0, -0.02);
+    bar.scale.x = fret === 0 || fret === fretSpan ? 1.8 : 1;
     fretBars.push(bar);
     group.add(bar);
   }
@@ -874,8 +1029,17 @@ function createTechniqueShardLayerContext(scene: THREE.Scene, layer: VisualLayer
   };
 }
 
-function resizeCanvasLayer(layer: TwoDLayerContext, width: number, height: number) {
-  const ratio = Math.min(window.devicePixelRatio, 2);
+function resizeCanvasLayer(layer: TwoDLayerContext, width: number, height: number, renderQuality: VisualRenderQuality) {
+  const pixelRatio = Math.min(window.devicePixelRatio, 2);
+  const limit = renderQuality === 'high' ? null : TWO_D_QUALITY_LIMITS[renderQuality];
+  const ratio = limit
+    ? Math.min(
+        pixelRatio,
+        limit.width / Math.max(1, width),
+        limit.height / Math.max(1, height),
+        Math.sqrt((limit.width * limit.height) / Math.max(1, width * height))
+      )
+    : pixelRatio;
   const canvasWidth = Math.max(1, Math.floor(width * ratio));
   const canvasHeight = Math.max(1, Math.floor(height * ratio));
   if (layer.canvas.width === canvasWidth && layer.canvas.height === canvasHeight) {
@@ -885,13 +1049,11 @@ function resizeCanvasLayer(layer: TwoDLayerContext, width: number, height: numbe
   layer.canvas.height = canvasHeight;
   layer.context.fillStyle = '#0a0e10';
   layer.context.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
-  layer.texture.needsUpdate = true;
 }
 
 function setLayerRenderOrder(context: LayerContext, index: number) {
   if (context.type === '2d') {
-    context.plane.renderOrder = index;
-    context.plane.position.z = -3 + index * 0.025;
+    context.canvas.style.zIndex = String(index);
   } else {
     context.group.renderOrder = index;
     context.group.children.forEach((child) => {
@@ -900,21 +1062,71 @@ function setLayerRenderOrder(context: LayerContext, index: number) {
   }
 }
 
-function captureRecordingFrame(recording: RecordingState | null, source: HTMLCanvasElement) {
+function captureRecordingFrame(
+  recording: RecordingState | null,
+  source: HTMLCanvasElement,
+  layerContexts: Map<string, LayerContext>
+) {
   if (!recording) {
     return;
   }
-  recording.context.globalCompositeOperation = 'lighter';
-  recording.context.globalAlpha = recording.frameCount === 0 ? 1 : 0.16;
-  recording.context.drawImage(source, 0, 0, recording.canvas.width, recording.canvas.height);
+  const frame = document.createElement('canvas');
+  frame.width = recording.canvas.width;
+  frame.height = recording.canvas.height;
+  const frameContext = frame.getContext('2d', { alpha: recording.transparentBackground })!;
+  drawVisualFrameToContext(frameContext, frame.width, frame.height, layerContexts, source, recording.transparentBackground);
+  recording.context.globalCompositeOperation = recording.transparentBackground ? 'lighter' : 'lighten';
+  recording.context.globalAlpha = recording.frameCount === 0 ? 1 : recording.accumulationAlpha;
+  recording.context.drawImage(frame, 0, 0);
   recording.context.globalAlpha = 1;
   recording.context.globalCompositeOperation = 'source-over';
   recording.frameCount += 1;
 }
 
+function captureVideoFrame(
+  recording: { canvas: HTMLCanvasElement; context: CanvasRenderingContext2D; transparentBackground: boolean } | null,
+  source: HTMLCanvasElement,
+  layerContexts: Map<string, LayerContext>
+) {
+  if (!recording) {
+    return;
+  }
+  drawVisualFrameToContext(recording.context, recording.canvas.width, recording.canvas.height, layerContexts, source, recording.transparentBackground);
+}
+
+function drawVisualFrameToContext(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  layerContexts: Map<string, LayerContext>,
+  webglCanvas: HTMLCanvasElement,
+  transparentBackground: boolean
+) {
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = 'source-over';
+  if (transparentBackground) {
+    context.clearRect(0, 0, width, height);
+  } else {
+    context.fillStyle = '#07090a';
+    context.fillRect(0, 0, width, height);
+  }
+
+  const twoDLayers = Array.from(layerContexts.values())
+    .filter((layer): layer is TwoDLayerContext => layer.type === '2d' && layer.canvas.style.display !== 'none')
+    .sort((a, b) => Number(a.canvas.style.zIndex || 0) - Number(b.canvas.style.zIndex || 0));
+
+  twoDLayers.forEach((layer) => {
+    context.globalAlpha = Number(layer.canvas.style.opacity || 1);
+    context.drawImage(layer.canvas, 0, 0, width, height);
+  });
+
+  context.globalAlpha = 1;
+  context.drawImage(webglCanvas, 0, 0, width, height);
+}
+
 function hideLayerContext(context: LayerContext) {
   if (context.type === '2d') {
-    context.plane.visible = false;
+    context.canvas.style.display = 'none';
   } else {
     context.group.visible = false;
   }
@@ -973,9 +1185,10 @@ function render2DLayer(
   now: number,
   index: number
 ) {
-  layerContext.material.opacity = layer.enabled ? layer.controls.opacity : 0;
-  layerContext.plane.visible = layer.enabled && layer.controls.opacity > 0;
-  if (!layerContext.plane.visible) {
+  const visible = layer.enabled && layer.controls.opacity > 0;
+  layerContext.canvas.style.display = visible ? 'block' : 'none';
+  layerContext.canvas.style.opacity = String(layer.controls.opacity);
+  if (!visible) {
     return;
   }
   if (layer.mode === 'lineArt2d') {
@@ -987,12 +1200,12 @@ function render2DLayer(
   } else {
     drawTrails(layerContext, layer, frame, dt, now);
   }
-  layerContext.texture.needsUpdate = true;
 }
 
 function drawTrails(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, dt: number, now: number) {
   const { context, canvas } = layerContext;
-  const fade = frame.gateOpen ? 0.018 - frame.rms * 0.008 : 0.032;
+  const baseFade = layer.controls.trailFade ?? 0.028;
+  const fade = frame.gateOpen ? baseFade - frame.rms * baseFade * 0.42 : baseFade * 1.65;
   context.fillStyle = `rgba(10, 14, 16, ${Math.max(0.006, fade)})`;
   context.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -1034,8 +1247,9 @@ function drawLineArt(layerContext: TwoDLayerContext, layer: VisualLayer, frame: 
 
   const centerX = canvas.width * (0.5 + Math.sin(now * 0.00011 + layerContext.seed) * 0.12 * layer.controls.motionAmount);
   const centerY = canvas.height * (0.5 + Math.cos(now * 0.00013 + layerContext.seed) * 0.12 * layer.controls.motionAmount);
-  const rings = 2 + Math.floor(frame.mid * 7);
-  const points = 5 + Math.floor(frame.high * 10);
+  const complexity = layer.controls.lineComplexity ?? 1;
+  const rings = 2 + Math.floor(frame.mid * 7 * complexity);
+  const points = 5 + Math.floor(frame.high * 10 * complexity + (layer.controls.symmetry ?? 1) * 2);
   const baseRadius = Math.min(canvas.width, canvas.height) * (0.08 + frame.low * 0.24 * layer.controls.scaleAmount);
 
   for (let ring = 0; ring < rings; ring += 1) {
@@ -1043,7 +1257,7 @@ function drawLineArt(layerContext: TwoDLayerContext, layer: VisualLayer, frame: 
     const phase = now * 0.00018 * layer.controls.motionAmount + ring * 0.6 + index * 0.35;
     const lightness = 46 + frame.rms * 34 + ring * 3;
     context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + ring * 24 * layer.controls.colorAmount)}, ${62 + frame.high * 24}%, ${lightness}%, ${0.1 + frame.rms * 0.32})`;
-    context.lineWidth = 0.8 + frame.rms * 6 + ring * 0.28;
+    context.lineWidth = (0.8 + frame.rms * 6 + ring * 0.28) * (layer.controls.lineWeight ?? 1);
     context.beginPath();
     for (let point = 0; point <= points; point += 1) {
       const pct = point / points;
@@ -1076,6 +1290,7 @@ function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame
   const bottom = canvas.height * 0.82;
   const width = right - left;
   const height = bottom - top;
+  const fretSpan = Math.max(5, Math.min(24, Math.round(layer.controls.fretSpan ?? 12)));
   const color = new THREE.Color();
 
   context.globalCompositeOperation = 'lighter';
@@ -1098,8 +1313,8 @@ function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame
     context.stroke();
   }
 
-  for (let fret = 0; fret <= 12; fret += 1) {
-    const x = left + (fret / 12) * width;
+  for (let fret = 0; fret <= fretSpan; fret += 1) {
+    const x = left + (fret / fretSpan) * width;
     const strong = fret === 0 || fret === 12 || fret === features.fretNumber;
     context.strokeStyle = `rgba(180, 205, 196, ${strong ? 0.34 + frame.attack * 0.28 : 0.11})`;
     context.lineWidth = strong ? 2.4 : 1;
@@ -1111,9 +1326,9 @@ function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame
 
   voicing.forEach((candidate) => {
     const confidence = clamp01(candidate.confidence);
-    const x = left + (Math.max(0, Math.min(12, candidate.fretNumber)) / 12) * width;
+    const x = left + (Math.max(0, Math.min(fretSpan, candidate.fretNumber)) / fretSpan) * width;
     const y = top + ((6 - Math.max(1, Math.min(6, candidate.stringNumber))) / 5) * height;
-    const radius = (10 + confidence * 30 + frame.attack * 18) * layer.controls.scaleAmount;
+    const radius = (10 + confidence * 30 + frame.attack * 18) * (layer.controls.markerSize ?? layer.controls.scaleAmount);
     color.setHSL(wrap01(candidate.pitchClass / 12 + frame.hue * 0.05), 0.78, 0.48 + confidence * 0.22);
     const gradient = context.createRadialGradient(x, y, 1, x, y, radius * 1.8);
     gradient.addColorStop(0, `rgba(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)}, ${0.36 + confidence * 0.34})`);
@@ -1134,10 +1349,10 @@ function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame
     if (age > 1.3) {
       return;
     }
-    const x = left + (Math.max(0, Math.min(12, event.fretNumber ?? features.fretNumber ?? 0)) / 12) * width;
+    const x = left + (Math.max(0, Math.min(fretSpan, event.fretNumber ?? features.fretNumber ?? 0)) / fretSpan) * width;
     const y = top + ((6 - Math.max(1, Math.min(6, event.stringNumber ?? features.stringNumber ?? 3))) / 5) * height;
     const alpha = (1 - age / 1.3) * clamp01(event.strength) * layer.controls.opacity;
-    const radius = (age * 130 + 18 + frame.onset * 26) * layer.controls.scaleAmount;
+    const radius = (age * 130 + 18 + frame.onset * 26) * (layer.controls.pulseDecay ?? layer.controls.scaleAmount);
     context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + techniqueHueOffset(event.type))}, 82%, 62%, ${alpha})`;
     context.lineWidth = 1 + alpha * 8;
     context.beginPath();
@@ -1146,7 +1361,7 @@ function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame
   });
 
   if (features.bendCents && Math.abs(features.bendCents) > 8 && features.stringNumber && features.fretNumber !== null) {
-    const x = left + (Math.max(0, Math.min(12, features.fretNumber ?? 0)) / 12) * width;
+    const x = left + (Math.max(0, Math.min(fretSpan, features.fretNumber ?? 0)) / fretSpan) * width;
     const y = top + ((6 - Math.max(1, Math.min(6, features.stringNumber))) / 5) * height;
     context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + 190)}, 82%, 64%, ${0.18 + clamp01(Math.abs(features.bendCents) / 180) * 0.52})`;
     context.lineWidth = 2 + clamp01(Math.abs(features.bendCents) / 120) * 6;
@@ -1163,7 +1378,7 @@ function drawTechniqueMap(layerContext: TwoDLayerContext, layer: VisualLayer, fr
   const { context, canvas } = layerContext;
   context.globalCompositeOperation = 'source-over';
   context.drawImage(canvas, -Math.max(1, Math.floor(2 + layer.controls.motionAmount * 3)), 0);
-  context.fillStyle = 'rgba(7, 10, 11, 0.035)';
+  context.fillStyle = `rgba(7, 10, 11, ${layer.controls.historyFade ?? 0.035})`;
   context.fillRect(0, 0, canvas.width, canvas.height);
 
   const x = canvas.width - Math.max(4, Math.floor(canvas.width * 0.006));
@@ -1181,7 +1396,7 @@ function drawTechniqueMap(layerContext: TwoDLayerContext, layer: VisualLayer, fr
   lanes.forEach((value, lane) => {
     const y = lane * laneHeight;
     const hue = wrap01(frame.hue + lane * 0.105 + getTechniqueIntensity(features) * 0.08);
-    const height = Math.max(2, value * laneHeight * 0.78 * layer.controls.scaleAmount);
+    const height = Math.max(2, value * laneHeight * 0.78 * (layer.controls.laneGain ?? layer.controls.scaleAmount));
     context.fillStyle = `hsla(${Math.round(hue * 360)}, ${64 + value * 24}%, ${28 + value * 46}%, ${0.18 + value * 0.54})`;
     context.fillRect(x, y + laneHeight - height, columnWidth, height);
 
@@ -1204,7 +1419,7 @@ function drawTechniqueMap(layerContext: TwoDLayerContext, layer: VisualLayer, fr
     const eventX = canvas.width - age * canvas.width * 0.44 * Math.max(0.4, layer.controls.motionAmount);
     const eventLane = eventLaneIndex(event.type);
     const y = eventLane * laneHeight + laneHeight * 0.5;
-    const alpha = (1 - age / 1.2) * clamp01(event.strength) * layer.controls.opacity;
+    const alpha = (1 - age / 1.2) * clamp01(event.strength) * layer.controls.opacity * (layer.controls.eventAccent ?? 1);
     context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + techniqueHueOffset(event.type))}, 92%, 62%, ${alpha})`;
     context.lineWidth = 1 + alpha * 7;
     context.beginPath();
@@ -1258,7 +1473,7 @@ function renderFormsLayer(context: FormsLayerContext, layer: VisualLayer, frame:
   context.mesh.rotation.z += dt * (frame.noteStability * 0.4) * layer.controls.motionAmount;
 
   if (frame.onset > 0.2) {
-    spawnParticles(context.particles, context.particlePositions.length / 3, frame);
+    spawnParticles(context.particles, context.particlePositions.length / 3, frame, layer.controls.particleBurst ?? 1);
   }
   updateParticles(context.particles, context.particlePositions, context.particleColors, dt, frame);
   context.particleGeometry.attributes.position.needsUpdate = true;
@@ -1268,6 +1483,7 @@ function renderFormsLayer(context: FormsLayerContext, layer: VisualLayer, frame:
 function renderSpectralFieldLayer(context: SpectralLayerContext, layer: VisualLayer, frame: LayerFrame, now: number, index: number) {
   context.group.visible = layer.enabled && layer.controls.opacity > 0;
   context.material.opacity = layer.controls.opacity;
+  context.material.size = 0.035 * (layer.controls.pointSize ?? 1);
   if (!context.group.visible) {
     return;
   }
@@ -1276,7 +1492,14 @@ function renderSpectralFieldLayer(context: SpectralLayerContext, layer: VisualLa
   context.group.position.z = -0.6 - index * 0.08;
 
   const color = new THREE.Color();
+  const liveCount = Math.floor(context.seeds.length * (layer.controls.density ?? 1));
   context.seeds.forEach((seed, pointIndex) => {
+    if (pointIndex > liveCount) {
+      context.positions[pointIndex * 3] = 999;
+      context.positions[pointIndex * 3 + 1] = 999;
+      context.positions[pointIndex * 3 + 2] = 999;
+      return;
+    }
     const bandValue = seed.band === 0 ? frame.low : seed.band === 1 ? frame.mid : frame.high;
     const pulse = 0.35 + bandValue * 2.4 * layer.controls.scaleAmount + frame.onset * 0.8;
     const angle = seed.angle + now * 0.00016 * layer.controls.motionAmount * (seed.band + 1);
@@ -1316,7 +1539,7 @@ function renderChromaConstellationLayer(
   const color = new THREE.Color();
   const qualityScale = getChordQualityScale(features.chordQuality);
   context.group.position.set((index - 1) * 0.34, 0, -0.2 - index * 0.06);
-  context.group.rotation.z += dt * (0.08 + frame.vibratoRate * 0.8 + Math.abs(features.bendCents) / 480) * layer.controls.motionAmount;
+  context.group.rotation.z += dt * (0.08 + frame.vibratoRate * 0.8 + Math.abs(features.bendCents) / 480) * (layer.controls.orbitSpeed ?? layer.controls.motionAmount);
   context.group.rotation.x = Math.sin(now * 0.00022 + index) * 0.16 * layer.controls.motionAmount;
   context.group.scale.setScalar((0.92 + frame.rms * 0.34) * qualityScale);
 
@@ -1325,7 +1548,7 @@ function renderChromaConstellationLayer(
     const active = chroma > 0.18;
     const inChord = chordSet.has(pitchClass);
     const angle = (pitchClass / 12) * Math.PI * 2 - Math.PI / 2;
-    const radius = 2.0 + chroma * 0.55 * layer.controls.scaleAmount + (inChord ? 0.18 : 0);
+    const radius = 2.0 + chroma * 0.55 * (layer.controls.nodeScale ?? layer.controls.scaleAmount) + (inChord ? 0.18 * (layer.controls.chordTension ?? 1) : 0);
     const z = Math.sin(now * 0.0016 + pitchClass) * frame.vibratoDepth * 0.18 + chroma * frame.brightness * 0.55;
     node.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, z);
     node.scale.setScalar(0.72 + chroma * 2.2 + (inChord ? 0.55 : 0));
@@ -1368,7 +1591,7 @@ function renderGuitarGlyphLayer(
   const logSpectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
   const eventBoost = Array.isArray(features.guitarEvents) ? features.guitarEvents.reduce((max, event) => Math.max(max, event.strength), 0) : 0;
   context.group.position.set((index - 1) * 0.42, -0.15, -0.4 - index * 0.06);
-  context.group.rotation.x = -0.22 + Math.sin(now * 0.00022 + index) * 0.08 * layer.controls.motionAmount;
+  context.group.rotation.x = -0.22 * (layer.controls.fretboardTilt ?? 1) + Math.sin(now * 0.00022 + index) * 0.08 * layer.controls.motionAmount;
   context.group.rotation.y = Math.sin(now * 0.00018 + features.bendCents * 0.002) * 0.18 * layer.controls.motionAmount;
   context.group.scale.setScalar(0.92 + frame.rms * 0.18 + (features.guitarTechniqueConfidence ?? 0) * 0.08);
 
@@ -1386,7 +1609,7 @@ function renderGuitarGlyphLayer(
       node.scale.setScalar(0.01);
       return;
     }
-    const x = fretToX(candidate.fretNumber);
+    const x = fretToX(candidate.fretNumber, layer.controls.fretSpan ?? 12);
     const y = stringToY(candidate.stringNumber);
     const confidence = clamp01(candidate.confidence);
     const active = features.stringNumber === candidate.stringNumber || confidence > 0.5;
@@ -1395,8 +1618,8 @@ function renderGuitarGlyphLayer(
     const hue = wrap01((candidate.pitchClass ?? 0) / 12 + frame.hue * 0.08);
     material.opacity = layer.controls.opacity * (0.48 + confidence * 0.52);
     material.color.setHSL(hue, 0.72 + frame.brightness * 0.18, 0.36 + confidence * 0.28);
-    material.emissive.setHSL(hue, 0.76, 0.08 + confidence * 0.28 + eventBoost * 0.22);
-    material.emissiveIntensity = 0.6 + confidence * 1.6 + frame.attack * 1.2;
+    material.emissive.setHSL(hue, 0.76, 0.08 + confidence * 0.28 * (layer.controls.noteGlow ?? 1) + eventBoost * 0.22);
+    material.emissiveIntensity = 0.6 + (confidence * 1.6 + frame.attack * 1.2) * (layer.controls.noteGlow ?? 1);
   });
 
   const matrix = new THREE.Matrix4();
@@ -1405,7 +1628,7 @@ function renderGuitarGlyphLayer(
     const value = clamp01(logSpectrum[bin] ?? 0);
     const x = -2.55 + bin * (5.1 / 35);
     const y = -1.72 - value * 0.42;
-    const scaleY = 0.04 + value * 0.82 * layer.controls.scaleAmount;
+    const scaleY = 0.04 + value * 0.82 * (layer.controls.spectrumHeight ?? layer.controls.scaleAmount);
     matrix.compose(
       new THREE.Vector3(x, y, -0.05),
       new THREE.Quaternion(),
@@ -1429,7 +1652,7 @@ function renderGuitarGlyphLayer(
       if (context.seenEventIds.size > 128) {
         context.seenEventIds = new Set(Array.from(context.seenEventIds).slice(-96));
       }
-      spawnGlyphEventParticles(context, event.stringNumber ?? features.stringNumber, event.fretNumber ?? features.fretNumber, event.strength, frame, technique);
+      spawnGlyphEventParticles(context, event.stringNumber ?? features.stringNumber, event.fretNumber ?? features.fretNumber, event.strength, frame, technique, layer.controls.fretSpan ?? 12);
     });
   }
 
@@ -1474,12 +1697,25 @@ function renderStringResonatorLayer(
   const color = new THREE.Color();
   const segments = 56;
   let offset = 0;
+  const visibleStrings = Math.max(1, Math.min(6, Math.round(layer.controls.stringCount ?? 6)));
   context.group.position.set((index - 1) * 0.28, -0.05, -0.15 - index * 0.08);
   context.group.rotation.x = -0.12 + Math.sin(now * 0.00018 + index) * 0.1 * layer.controls.motionAmount;
   context.group.rotation.y = Math.sin(now * 0.00015 + features.bendCents * 0.002) * 0.22 * layer.controls.motionAmount;
   context.group.scale.setScalar(0.92 + frame.low * 0.18 + clamp01(features.guitarTechniqueConfidence ?? 0) * 0.1);
 
   for (let stringIndex = 0; stringIndex < 6; stringIndex += 1) {
+    if (stringIndex >= visibleStrings) {
+      for (let hidden = 0; hidden < (segments - 1) * 2; hidden += 1) {
+        context.positions[offset] = 999;
+        context.positions[offset + 1] = 999;
+        context.positions[offset + 2] = 999;
+        context.colors[offset] = 0;
+        context.colors[offset + 1] = 0;
+        context.colors[offset + 2] = 0;
+        offset += 3;
+      }
+      continue;
+    }
     const stringNumber = 6 - stringIndex;
     const voicingEnergy = voicing
       .filter((candidate) => candidate.stringNumber === stringNumber)
@@ -1489,11 +1725,11 @@ function renderStringResonatorLayer(
     const muteDamp = 1 - clamp01(features.muteAmount ?? 0) * 0.55;
     const y = 1.12 - stringIndex * 0.44;
     const zBase = (stringIndex - 2.5) * 0.06;
-    const bend = clamp01(Math.abs(features.bendCents ?? 0) / 180);
-    const waveAmp = (0.025 + energy * 0.34 + frame.vibratoDepth * 0.22 + bend * 0.18) * layer.controls.scaleAmount * muteDamp;
+    const bend = clamp01(Math.abs(features.bendCents ?? 0) / 180) * (layer.controls.bendSensitivity ?? 1);
+    const waveAmp = (0.025 + energy * 0.34 + frame.vibratoDepth * 0.22 + bend * 0.18) * (layer.controls.waveDepth ?? layer.controls.scaleAmount) * muteDamp;
     const frequency = 1.4 + stringIndex * 0.18 + frame.vibratoRate * 3.2 + clamp01(features.pickNoise ?? 0) * 1.4;
     const hue = wrap01(frame.hue + stringIndex * 0.065 + voicingEnergy * 0.08);
-    context.stringEnergy[stringIndex] *= Math.max(0.78, 0.96 - dt * (1.4 + clamp01(features.muteAmount ?? 0) * 3));
+    context.stringEnergy[stringIndex] *= Math.max(0.72, 0.98 - dt * (1.4 / (layer.controls.resonanceDecay ?? 1) + clamp01(features.muteAmount ?? 0) * 3));
 
     for (let segment = 0; segment < segments - 1; segment += 1) {
       for (let endpoint = 0; endpoint < 2; endpoint += 1) {
@@ -1552,8 +1788,13 @@ function renderTechniqueShardLayer(
   context.group.rotation.x = Math.sin(now * 0.0002 + index) * 0.2 * layer.controls.motionAmount;
 
   context.seeds.forEach((seed, shardIndex) => {
+    if (shardIndex > context.seeds.length * (layer.controls.shardCount ?? 1)) {
+      matrix.compose(new THREE.Vector3(999, 999, 999), quaternion, scale.setScalar(0.001));
+      context.shards.setMatrixAt(shardIndex, matrix);
+      return;
+    }
     const techniqueMatch = techniqueIntensity * (0.55 + seed.techniqueBias * 0.55);
-    const radius = seed.radius * (0.62 + harmonic * 0.42 + frame.mid * 0.28);
+    const radius = seed.radius * (0.62 + harmonic * 0.42 + frame.mid * 0.28) * (layer.controls.scatter ?? 1);
     const spin = now * 0.00025 * layer.controls.motionAmount * (1 + seed.techniqueBias * 2.2 + pick);
     const angle = seed.angle + spin + bend * Math.sin(seed.phase + now * 0.003) * 0.8;
     const rough = pick * Math.sin(seed.phase * 2.1 + now * 0.008) * 0.34;
@@ -1567,7 +1808,7 @@ function renderTechniqueShardLayer(
       angle + now * 0.0007,
       seed.phase + techniqueMatch * 2.4
     ));
-    const shardScale = (0.42 + frame.rms * 1.5 + techniqueMatch * 1.4 + frame.attack * 1.1) * layer.controls.scaleAmount;
+    const shardScale = (0.42 + frame.rms * 1.5 + techniqueMatch * 1.4 + frame.attack * 1.1) * (layer.controls.fracture ?? layer.controls.scaleAmount);
     scale.set(
       0.6 + pick * 1.8 + bend * 1.2,
       shardScale * (0.55 + seed.techniqueBias * 1.7),
@@ -1696,11 +1937,12 @@ function spawnGlyphEventParticles(
   fretNumber: number | null | undefined,
   strength: number,
   frame: LayerFrame,
-  technique: AudioFeatures['guitarTechnique']
+  technique: AudioFeatures['guitarTechnique'],
+  fretSpan = 12
 ) {
   const maxParticles = context.particlePositions.length / 3;
   const source = new THREE.Vector3(
-    fretToX(fretNumber ?? 0),
+    fretToX(fretNumber ?? 0, fretSpan),
     stringToY(stringNumber ?? 3),
     0.2
   );
@@ -1730,9 +1972,10 @@ function stringToY(stringNumber: number): number {
   return 1.1 - (6 - clamped) * 0.44;
 }
 
-function fretToX(fretNumber: number): number {
-  const clamped = Math.max(0, Math.min(12, fretNumber));
-  return -2.35 + clamped * 0.39;
+function fretToX(fretNumber: number, fretSpan = 12): number {
+  const span = Math.max(5, Math.min(24, fretSpan));
+  const clamped = Math.max(0, Math.min(span, fretNumber));
+  return -2.35 + (clamped / span) * 4.68;
 }
 
 function getStringEnergy(features: AudioFeatures, stringNumber: number): number {
@@ -1882,8 +2125,17 @@ function getChordQualityScale(quality: AudioFeatures['chordQuality']): number {
   }
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
 function createRenderer(): THREE.WebGLRenderer {
-  return new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true });
+  return new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance', preserveDrawingBuffer: true });
 }
 
 function createChromaticGeometries(): THREE.BufferGeometry[] {
@@ -1912,8 +2164,8 @@ function getPitchClassIndex(pitchHz: number | null): number {
   return ((midi % 12) + 12) % 12;
 }
 
-function spawnParticles(particles: Particle[], maxParticles: number, frame: LayerFrame) {
-  const count = Math.floor(8 + frame.onset * 34 + frame.high * 18);
+function spawnParticles(particles: Particle[], maxParticles: number, frame: LayerFrame, burst = 1) {
+  const count = Math.floor((8 + frame.onset * 34 + frame.high * 18) * burst);
   for (let i = 0; i < count; i += 1) {
     if (particles.length >= maxParticles) {
       particles.shift();

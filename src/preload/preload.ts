@@ -6,10 +6,13 @@ import type {
   AudioParamsUpdate,
   AudioStartConfig,
   AudioStatus,
+  MediaExportRequest,
+  MediaExportResult,
   PngExportRequest,
   PngExportResult
 } from '../shared/audio';
 import {
+  ART_EXPORT_MEDIA,
   ART_EXPORT_PNG,
   AUDIO_GET_LATEST_FEATURES,
   AUDIO_LIST_DEVICES,
@@ -37,7 +40,8 @@ const api = {
     }
   },
   art: {
-    exportPng: (request: PngExportRequest): Promise<PngExportResult> => ipcRenderer.invoke(ART_EXPORT_PNG, request)
+    exportPng: (request: PngExportRequest): Promise<PngExportResult> => ipcRenderer.invoke(ART_EXPORT_PNG, request),
+    exportMedia: (request: MediaExportRequest): Promise<MediaExportResult> => ipcRenderer.invoke(ART_EXPORT_MEDIA, request)
   }
 };
 

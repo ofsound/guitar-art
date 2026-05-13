@@ -2,8 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, systemPreferences } from 'electron
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
-import type { AudioMode, AudioParamsUpdate, AudioStartConfig, PngExportRequest, PngExportResult } from '../shared/audio';
+import type { AudioMode, AudioParamsUpdate, AudioStartConfig, MediaExportRequest, MediaExportResult, PngExportRequest, PngExportResult } from '../shared/audio';
 import {
+  ART_EXPORT_MEDIA,
   ART_EXPORT_PNG,
   AUDIO_GET_LATEST_FEATURES,
   AUDIO_LIST_DEVICES,
@@ -124,16 +125,43 @@ function registerArtIpc() {
     await writeFile(filePath, buffer);
     return { canceled: false, filePath };
   });
+
+  ipcMain.handle(ART_EXPORT_MEDIA, async (_event, request: MediaExportRequest): Promise<MediaExportResult> => {
+    const buffer = dataUrlToBuffer(request.dataUrl, request.mimeType);
+    const defaultPath = ensureExtension(request.suggestedName || `guitar-art-${Date.now()}.${request.extension}`, request.extension);
+    const options = {
+      title: request.extension === 'webm' ? 'Export performance recording' : 'Export generated art',
+      defaultPath,
+      filters: [{ name: request.extension === 'webm' ? 'WebM video' : 'PNG image', extensions: [request.extension] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+
+    if (result.canceled || !result.filePath) {
+      return { canceled: true };
+    }
+
+    const filePath = ensureExtension(result.filePath, request.extension);
+    await writeFile(filePath, buffer);
+    return { canceled: false, filePath };
+  });
 }
 
 function pngDataUrlToBuffer(dataUrl: string): Buffer {
-  const prefix = 'data:image/png;base64,';
+  return dataUrlToBuffer(dataUrl, 'image/png');
+}
+
+function dataUrlToBuffer(dataUrl: string, mimeType: string): Buffer {
+  const prefix = `data:${mimeType};base64,`;
   if (!dataUrl.startsWith(prefix)) {
-    throw new Error('Expected PNG data URL.');
+    throw new Error(`Expected ${mimeType} data URL.`);
   }
   return Buffer.from(dataUrl.slice(prefix.length), 'base64');
 }
 
 function ensurePngExtension(filePath: string): string {
-  return path.extname(filePath).toLowerCase() === '.png' ? filePath : `${filePath}.png`;
+  return ensureExtension(filePath, 'png');
+}
+
+function ensureExtension(filePath: string, extension: string): string {
+  return path.extname(filePath).toLowerCase() === `.${extension}` ? filePath : `${filePath}.${extension}`;
 }
