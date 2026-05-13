@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   AudioDevice,
   AudioMode,
@@ -1445,17 +1446,62 @@ function LayerSlider({
 }
 
 function ControlLabel({ children, tooltip, value }: { children: ReactNode; tooltip?: string; value?: ReactNode }) {
+  const labelRef = useRef<HTMLSpanElement | null>(null);
+  const [tooltipStyle, setTooltipStyle] = useState<CSSProperties | null>(null);
+  const showTooltip = Boolean(tooltip && tooltipStyle);
+
+  function updateTooltipPosition() {
+    const label = labelRef.current;
+    if (!label) {
+      return;
+    }
+    const rect = label.getBoundingClientRect();
+    const width = Math.min(420, Math.max(280, window.innerWidth - 36));
+    const left = Math.min(Math.max(18, rect.left), Math.max(18, window.innerWidth - width - 18));
+    const top = rect.bottom + 8;
+    setTooltipStyle({
+      left,
+      top,
+      width,
+      maxHeight: Math.max(160, window.innerHeight - top - 18)
+    });
+  }
+
+  useEffect(() => {
+    if (!showTooltip) {
+      return;
+    }
+    const syncPosition = () => updateTooltipPosition();
+    window.addEventListener('resize', syncPosition);
+    window.addEventListener('scroll', syncPosition, true);
+    return () => {
+      window.removeEventListener('resize', syncPosition);
+      window.removeEventListener('scroll', syncPosition, true);
+    };
+  }, [showTooltip]);
+
   return (
-    <span className={`control-label${tooltip ? ' has-tooltip' : ''}`} tabIndex={tooltip ? 0 : undefined}>
+    <span
+      ref={labelRef}
+      className={`control-label${tooltip ? ' has-tooltip' : ''}`}
+      tabIndex={tooltip ? 0 : undefined}
+      onMouseEnter={tooltip ? updateTooltipPosition : undefined}
+      onMouseLeave={tooltip ? () => setTooltipStyle(null) : undefined}
+      onFocus={tooltip ? updateTooltipPosition : undefined}
+      onBlur={tooltip ? () => setTooltipStyle(null) : undefined}
+    >
       <span className="control-label-row">
         <span className="control-label-name">{children}</span>
         {value !== undefined ? <span className="control-label-value">{value}</span> : null}
       </span>
-      {tooltip ? (
-        <span className="control-tooltip" role="tooltip">
-          {tooltip}
-        </span>
-      ) : null}
+      {showTooltip
+        ? createPortal(
+            <span className="control-tooltip control-tooltip-portal" role="tooltip" style={tooltipStyle ?? undefined}>
+              {tooltip}
+            </span>,
+            document.body
+          )
+        : null}
     </span>
   );
 }

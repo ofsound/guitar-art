@@ -129,6 +129,14 @@ input {
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
+.control-tooltip-portal {
+  position: fixed;
+  z-index: 1000;
+  overflow: auto;
+  opacity: 1;
+  transform: none;
+}
+
 .control-tooltip::before {
   content: '';
   position: absolute;
