@@ -828,10 +828,6 @@ export function App() {
             <span className="rail-kicker">Layers</span>
             <strong>{layers.length} active slot{layers.length === 1 ? '' : 's'}</strong>
           </div>
-          <div className="layer-add-row">
-            <button onClick={() => addLayer('2d')}>+ 2D</button>
-            <button onClick={() => addLayer('3d')}>+ 3D</button>
-          </div>
         </section>
 
         <section className="preset-panel">
@@ -872,6 +868,12 @@ export function App() {
               onRemove={removeLayer}
             />
           ))}
+        </div>
+        <div className="layer-add-footer">
+          <div className="layer-add-row">
+            <button onClick={() => addLayer('2d')}>+ 2D</button>
+            <button onClick={() => addLayer('3d')}>+ 3D</button>
+          </div>
         </div>
       </aside>
 

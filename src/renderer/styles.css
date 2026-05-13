@@ -41,8 +41,10 @@ input {
 }
 
 .layer-rail {
+  position: relative;
   gap: 14px;
   background: #0d1315;
+  overflow: hidden;
 }
 
 .control-group {
@@ -360,7 +362,26 @@ input[type='range'] {
 
 .layer-stack {
   display: grid;
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 86px;
+  overflow-y: auto;
   gap: 12px;
+}
+
+.layer-add-footer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 4;
+  padding: 24px 18px 18px;
+  background: linear-gradient(180deg, rgba(13, 19, 21, 0), rgba(13, 19, 21, 0.94) 28%, #0d1315 100%);
+  pointer-events: none;
+}
+
+.layer-add-footer .layer-add-row {
+  pointer-events: auto;
 }
 
 .layer-card {
