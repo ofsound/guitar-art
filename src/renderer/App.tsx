@@ -26,7 +26,6 @@ const GATE_THRESHOLD_STEP = 0.005;
 const LAYER_STORAGE_KEY = 'guitar-art.visualLayers.v1';
 const PRESET_STORAGE_KEY = 'guitar-art.visualLayerPresets.v1';
 const CONFIG_STORAGE_KEY = 'guitar-art.startConfig.v1';
-const CALIBRATION_STORAGE_KEY = 'guitar-art.calibrated.v1';
 const VISUAL_QUALITY_STORAGE_KEY = 'guitar-art.visualRenderQuality.v1';
 const A4_HZ = 440;
 const A4_MIDI = 69;
@@ -71,8 +70,6 @@ const CONTROL_TOOLTIPS: Record<string, string> = {
     'Applies pre-analysis gain to the incoming audio stream. The native engine scales the signal before computing rms, peak, band energies, spectral features, pitch confidence, gate state, clipping, guitar events, and technique estimates. Visual effect: higher gain makes layers react sooner and more strongly, but too much gain can clip and overdrive onset, brightness, and event strength.',
   gateThreshold:
     'Sets the global input gate threshold used by the audio engine and the sidebar meter. It is compared against signal level before the app reports the gate state. Visual effect: a higher threshold keeps idle noise from opening the global gate, while a lower threshold allows quieter notes and string noise to keep the visuals active.',
-  inputCalibration:
-    'Samples quiet-room rms and peak values, then recommends gateThreshold and inputGain. The recommendation uses the observed noise floor and peak headroom before the native DSP features are scaled. Visual effect: calibration makes the visual response start above room noise while preserving enough headroom for attacks, bends, and strums.',
   live2dQuality:
     'Sets the internal canvas resolution limit for 2D layers before drawing. It does not change audio DSP features; it changes the pixel workload used by Trails, Line Art, Fret Pulse, and Technique Map layers. Visual effect: lower quality is faster and softer, while high quality preserves sharper line detail, pulses, and trails.',
   captureWidth:
@@ -464,37 +461,11 @@ type CaptureSettings = {
   accumulationAlpha: number;
 };
 
-type CalibrationState = {
-  open: boolean;
-  running: boolean;
-  sampled: boolean;
-  startedAt: number;
-  progress: number;
-  noiseFloor: number;
-  recommendedGate: number;
-  recommendedGain: number;
-  clipping: boolean;
-  message: string;
-};
-
 const DEFAULT_CAPTURE_SETTINGS: CaptureSettings = {
   width: 1920,
   height: 1080,
   transparentBackground: false,
   accumulationAlpha: 0.16
-};
-
-const DEFAULT_CALIBRATION: CalibrationState = {
-  open: !localStorage.getItem(CALIBRATION_STORAGE_KEY),
-  running: false,
-  sampled: false,
-  startedAt: 0,
-  progress: 0,
-  noiseFloor: 0,
-  recommendedGate: DEFAULT_START_CONFIG.gateThreshold,
-  recommendedGain: DEFAULT_START_CONFIG.inputGain,
-  clipping: false,
-  message: 'Select your interface channel, stay quiet, then sample the room.'
 };
 
 export function App() {
@@ -503,7 +474,6 @@ export function App() {
   const [layers, setLayers] = useState<VisualLayer[]>(loadLayers);
   const [presets, setPresets] = useState<VisualLayerPreset[]>(loadPresets);
   const [captureSettings, setCaptureSettings] = useState<CaptureSettings>(DEFAULT_CAPTURE_SETTINGS);
-  const [calibration, setCalibration] = useState<CalibrationState>(DEFAULT_CALIBRATION);
   const [presetName, setPresetName] = useState('New preset');
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [recording, setRecording] = useState(false);
@@ -549,50 +519,6 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(VISUAL_QUALITY_STORAGE_KEY, visualQuality);
   }, [visualQuality]);
-
-  useEffect(() => {
-    if (!calibration.running) {
-      return;
-    }
-
-    const samples: number[] = [];
-    const peaks: number[] = [];
-    const startedAt = performance.now();
-    const durationMs = 2600;
-    const timer = window.setInterval(() => {
-      const elapsed = performance.now() - startedAt;
-      const features = latestRef.current;
-      samples.push(features.rms);
-      peaks.push(features.peak);
-      const progress = Math.min(1, elapsed / durationMs);
-      if (progress < 1) {
-        setCalibration((prev) => ({ ...prev, progress, noiseFloor: percentile(samples, 0.7), clipping: prev.clipping || features.clipping || features.peak > 0.92 }));
-        return;
-      }
-
-      const noiseFloor = percentile(samples, 0.7);
-      const peak = Math.max(...peaks, 0.001);
-      const recommendedGate = Math.max(GATE_THRESHOLD_MIN, Math.min(0.22, noiseFloor * 3.4 + 0.006));
-      const recommendedGain = Math.max(INPUT_GAIN_MIN, Math.min(INPUT_GAIN_MAX, config.inputGain * (0.42 / peak)));
-      const clipping = peaks.some((value) => value > 0.92);
-      setCalibration((prev) => ({
-        ...prev,
-        running: false,
-        sampled: true,
-        progress: 1,
-        noiseFloor,
-        recommendedGate,
-        recommendedGain,
-        clipping,
-        message: clipping
-          ? 'Input is clipping. Lower the interface gain, then sample again.'
-          : 'Room profile ready. Apply the gate and gain when the meter looks stable.'
-      }));
-      window.clearInterval(timer);
-    }, 100);
-
-    return () => window.clearInterval(timer);
-  }, [calibration.running, latestRef]);
 
   useEffect(() => {
     const exitOnEscape = (event: KeyboardEvent) => {
@@ -796,58 +722,6 @@ export function App() {
     setVisualFullscreen(true);
   }
 
-  async function startCalibration() {
-    setCalibration((prev) => ({
-      ...prev,
-      open: true,
-      running: true,
-      sampled: false,
-      startedAt: performance.now(),
-      progress: 0,
-      message: 'Sampling room noise. Keep the guitar muted.'
-    }));
-    if (config.mode !== 'live' || !status.running) {
-      await start('live');
-    }
-  }
-
-  function applyCalibration() {
-    if (!calibration.sampled) {
-      setCalibration((prev) => ({ ...prev, open: true, message: 'Sample the room before applying calibration.' }));
-      return;
-    }
-    const next = {
-      inputGain: calibration.recommendedGain,
-      gateThreshold: calibration.recommendedGate
-    };
-    setConfig((prev) => ({ ...prev, ...next }));
-    void audio.setParams(next).catch(() => undefined);
-    localStorage.setItem(CALIBRATION_STORAGE_KEY, 'true');
-    setCalibration((prev) => ({ ...prev, open: false, message: 'Calibration applied.' }));
-  }
-
-  function resetCalibration() {
-    const next = {
-      inputGain: DEFAULT_START_CONFIG.inputGain,
-      gateThreshold: DEFAULT_START_CONFIG.gateThreshold
-    };
-    setConfig((prev) => ({ ...prev, ...next }));
-    void audio.setParams(next).catch(() => undefined);
-    localStorage.removeItem(CALIBRATION_STORAGE_KEY);
-    setCalibration((prev) => ({
-      ...prev,
-      open: true,
-      running: false,
-      sampled: false,
-      progress: 0,
-      noiseFloor: 0,
-      recommendedGate: DEFAULT_START_CONFIG.gateThreshold,
-      recommendedGain: DEFAULT_START_CONFIG.inputGain,
-      clipping: false,
-      message: 'Calibration reset. Sample the room again when ready.'
-    }));
-  }
-
   return (
     <div className="app-shell">
       <aside className="control-rail">
@@ -944,59 +818,6 @@ export function App() {
             value={config.gateThreshold}
             onInput={(event) => updateGateThreshold(Number(event.currentTarget.value))}
           />
-        </section>
-
-        <section className="calibration-card">
-          <div className="calibration-header">
-            <label>
-              <ControlLabel tooltip={CONTROL_TOOLTIPS.inputCalibration}>Input calibration</ControlLabel>
-            </label>
-            <button className="secondary" onClick={() => setCalibration((prev) => ({ ...prev, open: !prev.open }))}>
-              {calibration.open ? 'Hide' : 'Open'}
-            </button>
-          </div>
-          {calibration.open ? (
-            <div className="calibration-body">
-              <div className="calibration-meter">
-                <div style={{ width: `${Math.min(100, latest.rms * 100)}%` }} />
-                <span style={{ left: `${Math.min(100, config.gateThreshold * 100)}%` }} />
-              </div>
-              <div className="calibration-grid">
-                <DiagnosticStat label="Noise" value={calibration.noiseFloor} />
-                <DiagnosticStat label="Gate" value={calibration.recommendedGate} />
-                <DiagnosticStat label="Target" valueText={`${calibration.recommendedGain.toFixed(2)}x`} />
-                <DiagnosticStat label="Peak" value={latest.peak} />
-              </div>
-              <div className="channel-test">
-                <button
-                  className="secondary"
-                  onClick={() => updateStartConfig({ channelIndex: Math.max(0, config.channelIndex - 1) }, true)}
-                  disabled={config.channelIndex <= 0}
-                >
-                  Prev channel
-                </button>
-                <button
-                  className="secondary"
-                  onClick={() => updateStartConfig({ channelIndex: Math.min(channelCount, config.channelIndex + 1) }, true)}
-                  disabled={config.channelIndex >= channelCount}
-                >
-                  Next channel
-                </button>
-              </div>
-              <div className="calibration-actions">
-                <button onClick={startCalibration} disabled={calibration.running}>
-                  {calibration.running ? `${Math.round(calibration.progress * 100)}%` : 'Sample room'}
-                </button>
-                <button className="secondary" onClick={applyCalibration} disabled={calibration.running || !calibration.sampled}>
-                  Apply
-                </button>
-                <button className="secondary" onClick={resetCalibration} disabled={calibration.running}>
-                  Reset
-                </button>
-              </div>
-              <div className={`record-state ${calibration.clipping ? 'warning' : ''}`}>{calibration.message}</div>
-            </div>
-          ) : null}
         </section>
 
         <section className="record-panel">
@@ -1674,14 +1495,6 @@ function createRecordingFileName(result: VisualRecordingResult): string {
 function createVideoFileName(durationMs: number): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   return `guitar-art-${stamp}-${Math.max(1, Math.round(durationMs / 1000))}s.webm`;
-}
-
-function percentile(values: number[], pct: number): number {
-  if (!values.length) {
-    return 0;
-  }
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * pct)))] ?? 0;
 }
 
 function clampNumber(value: number | undefined, min: number, max: number, fallback: number): number {

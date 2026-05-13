@@ -231,8 +231,7 @@ input[type='range'] {
   gap: 8px;
 }
 
-.record-panel,
-.calibration-card {
+.record-panel {
   display: grid;
   gap: 9px;
   padding: 12px;
@@ -247,10 +246,7 @@ input[type='range'] {
   gap: 8px;
 }
 
-.capture-grid,
-.calibration-grid,
-.channel-test,
-.calibration-actions {
+.capture-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -263,40 +259,6 @@ input[type='range'] {
   font-size: 11px;
   font-weight: 720;
   text-transform: uppercase;
-}
-
-.calibration-header {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.calibration-body {
-  display: grid;
-  gap: 9px;
-}
-
-.calibration-meter {
-  position: relative;
-  height: 12px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.calibration-meter > div {
-  height: 100%;
-  min-width: 2px;
-  background: linear-gradient(90deg, #77e2b5, #ffba72);
-}
-
-.calibration-meter > span {
-  position: absolute;
-  top: -4px;
-  bottom: -4px;
-  width: 2px;
-  background: #edf4f2;
 }
 
 .record-state {
