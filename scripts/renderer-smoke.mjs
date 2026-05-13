@@ -103,7 +103,7 @@ try {
   await page.goto('http://127.0.0.1:5174', { waitUntil: 'networkidle' });
   try {
     await page.waitForSelector('.visual-host canvas', { timeout: 10_000 });
-    await page.waitForSelector('.meter-strip', { timeout: 10_000 });
+    await page.waitForSelector('.dsp-meter-column', { timeout: 10_000 });
     await page.waitForSelector('.tuner-panel .tuner-needle', { timeout: 10_000 });
     await page.waitForSelector('.record-panel', { timeout: 10_000 });
     await page.waitForSelector('.spectrum-bars', { timeout: 10_000 });
@@ -145,7 +145,7 @@ try {
   if (errors.length > 0) {
     throw new Error(`Renderer console errors:\n${errors.join('\n')}`);
   }
-  if (canvasCount !== 1 || twoDCanvasCount < 1 || meterCount < 9) {
+  if (canvasCount !== 1 || twoDCanvasCount < 1 || meterCount < 17) {
     throw new Error(`Unexpected renderer shape: canvas=${canvasCount} twoD=${twoDCanvasCount} meters=${meterCount}`);
   }
   if (tunerCount !== 1 || tunerNeedleCount !== 1) {

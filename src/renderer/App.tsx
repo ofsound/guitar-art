@@ -900,13 +900,13 @@ export function App() {
             <button className="fullscreen-button" type="button" onClick={enterVisualFullscreen}>
               Fullscreen
             </button>
-            <DiagnosticsPanel features={latest} />
-            <MeterStrip features={latest} />
           </>
         ) : null}
       </main>
 
       <aside className="capture-rail">
+        <DspSidebar features={latest} />
+
         <section className="record-panel">
           <label>Art capture</label>
           <div className="control-group">
@@ -1600,33 +1600,57 @@ function SidebarGainMeter({ value, gateThreshold }: { value: number; gateThresho
   );
 }
 
-function MeterStrip({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
-  return (
-    <div className="meter-strip">
-      <Meter label="RMS" value={features.rms} />
-      <Meter label="Peak" value={features.peak} alert={features.clipping} />
-      <Meter label="Low" value={features.low} />
-      <Meter label="Mid" value={features.mid} />
-      <Meter label="High" value={features.high} />
-      <Meter label="Centroid" value={features.spectralCentroid} />
-      <Meter label="Pitch" value={features.pitchConfidence} note={features.noteName ?? '--'} />
-      <Meter label="Stable" value={features.noteStability} />
-      <Meter label="Onset" value={features.onset} pulse={features.onset > 0.3} />
-    </div>
-  );
-}
-
-function DiagnosticsPanel({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
-  const chord = features.chordName ?? '--';
-  const position = typeof features.stringNumber === 'number' && typeof features.fretNumber === 'number' ? `S${features.stringNumber} F${features.fretNumber}` : '--';
+function DspSidebar({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
   const voicing = Array.isArray(features.voicing) ? features.voicing : [];
-  const logSpectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
-  const technique = features.guitarTechnique ?? 'idle';
   const voicingConfidence = voicing.length
     ? voicing.reduce((sum, candidate) => sum + candidate.confidence, 0) / voicing.length
     : 0;
+  const position = typeof features.stringNumber === 'number' && typeof features.fretNumber === 'number' ? `S${features.stringNumber} F${features.fretNumber}` : '--';
+
   return (
-    <section className="diagnostics-panel">
+    <section className="dsp-sidebar">
+      <div className="dsp-sidebar-header">
+        <span className="rail-kicker">DSP inputs</span>
+        <strong>Signal status</strong>
+      </div>
+      <div className="dsp-meter-column">
+        <Meter label="RMS" value={features.rms} />
+        <Meter label="Peak" value={features.peak} alert={features.clipping} />
+        <Meter label="Low" value={features.low} />
+        <Meter label="Mid" value={features.mid} />
+        <Meter label="High" value={features.high} />
+        <Meter label="Centroid" value={features.spectralCentroid} />
+        <Meter label="Pitch" value={features.pitchConfidence} note={features.noteName ?? '--'} />
+        <Meter label="Stable" value={features.noteStability} />
+        <Meter label="Onset" value={features.onset} pulse={features.onset > 0.3} />
+        <Meter label="Pos" value={features.pitchConfidence} note={position} />
+        <Meter label="Voice" value={voicingConfidence} />
+        <Meter label="Flux" value={features.spectralFlux} />
+        <Meter label="Pick" value={features.pickNoise} />
+        <Meter label="Mute" value={features.muteAmount} />
+        <Meter label="Harm" value={features.harmonicRatio} />
+        <Meter label="Bend" value={Math.min(1, Math.abs(features.bendCents) / 180)} note={`${features.bendCents >= 0 ? '+' : ''}${features.bendCents.toFixed(0)}c`} />
+        <Meter label="Vib" value={features.vibratoDepth} />
+      </div>
+      <FeatureDetails features={features} voicingConfidence={voicingConfidence} position={position} />
+    </section>
+  );
+}
+
+function FeatureDetails({
+  features,
+  voicingConfidence,
+  position
+}: {
+  features: ReturnType<typeof useAudioFeatures>['latest'];
+  voicingConfidence: number;
+  position: string;
+}) {
+  const chord = features.chordName ?? '--';
+  const logSpectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
+  const technique = features.guitarTechnique ?? 'idle';
+  return (
+    <div className="feature-details">
       <div className="diagnostics-header">
         <span>{technique.replace('_', ' ')}</span>
         <strong>{chord}</strong>
@@ -1654,7 +1678,7 @@ function DiagnosticsPanel({ features }: { features: ReturnType<typeof useAudioFe
         <DiagnosticStat label="Bend" value={features.bendCents} suffix="c" signed />
         <DiagnosticStat label="Vib" value={features.vibratoDepth} />
       </div>
-    </section>
+    </div>
   );
 }
 

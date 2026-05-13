@@ -250,7 +250,7 @@ input[type='range'] {
 }
 
 .capture-rail .record-panel {
-  min-height: 100%;
+  margin-top: auto;
 }
 
 .record-actions {
@@ -755,34 +755,38 @@ input[type='range'] {
   backdrop-filter: blur(14px);
 }
 
-.meter-strip {
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 18px;
+.dsp-sidebar {
   display: grid;
-  grid-template-columns: repeat(9, minmax(68px, 1fr));
-  gap: 8px;
-  align-items: end;
-  padding: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  background: rgba(7, 10, 10, 0.78);
-  backdrop-filter: blur(14px);
+  gap: 12px;
 }
 
-.diagnostics-panel {
-  position: absolute;
-  right: 18px;
-  bottom: 100px;
-  width: min(520px, calc(100% - 36px));
+.dsp-sidebar-header {
+  display: grid;
+  gap: 3px;
+}
+
+.dsp-sidebar-header strong {
+  color: #edf4f2;
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.dsp-meter-column {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: #0b1012;
+}
+
+.feature-details {
   display: grid;
   gap: 10px;
   padding: 11px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  background: rgba(7, 10, 10, 0.76);
-  backdrop-filter: blur(14px);
+  background: #0b1012;
 }
 
 .diagnostics-header {
@@ -938,15 +942,7 @@ input[type='range'] {
 
 @media (max-width: 1100px) {
   .app-shell {
-    grid-template-columns: 250px 310px minmax(0, 1fr) 252px;
-  }
-
-  .meter-strip {
-    grid-template-columns: repeat(5, minmax(72px, 1fr));
-  }
-
-  .diagnostics-panel {
-    bottom: 158px;
+    grid-template-columns: 250px 310px minmax(0, 1fr) 268px;
   }
 
   .diagnostic-grid {
