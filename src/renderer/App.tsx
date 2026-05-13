@@ -14,6 +14,8 @@ import type {
 } from '../shared/audio';
 import { DEFAULT_LAYER_CONTROLS, DEFAULT_START_CONFIG, DEFAULT_VISUAL_LAYERS } from '../shared/audio';
 import { getArtClient, getAudioClient } from './audioClient';
+import type { ActivityAnalysisReport, ActivityMetricResult } from './audioAnalysis';
+import { analyzeAudioRecording, createWaveformPreview } from './audioAnalysis';
 import { useAudioFeatures } from './useAudioFeatures';
 import { VisualSynth } from './VisualSynth';
 import type { VisualCaptureOptions, VisualRecordingResult, VisualRenderQuality, VisualSynthHandle } from './VisualSynth';
@@ -463,6 +465,20 @@ type CaptureSettings = {
 
 type RailKey = 'input' | 'layers' | 'dsp';
 type MinimizedRails = Record<RailKey, boolean>;
+type SignalAnalysisState = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error';
+type SignalAnalysisSession = {
+  audioContext: AudioContext;
+  analyser: AnalyserNode;
+  source: MediaStreamAudioSourceNode;
+  processor: ScriptProcessorNode;
+  mutedOutput: GainNode;
+  stream: MediaStream;
+  chunks: Float32Array[];
+  sampleRate: number;
+  totalSamples: number;
+  startedAt: number;
+  lastWaveformUpdate: number;
+};
 
 const DEFAULT_CAPTURE_SETTINGS: CaptureSettings = {
   width: 1920,
@@ -483,6 +499,11 @@ export function App() {
   const [videoRecording, setVideoRecording] = useState(false);
   const [visualFullscreen, setVisualFullscreen] = useState(false);
   const [visualQuality, setVisualQuality] = useState<VisualRenderQuality>(loadVisualQuality);
+  const [signalAnalysisState, setSignalAnalysisState] = useState<SignalAnalysisState>('idle');
+  const [signalAnalysisStatus, setSignalAnalysisStatus] = useState('Ready to analyze');
+  const [signalAnalysisWaveform, setSignalAnalysisWaveform] = useState<number[]>([]);
+  const [signalAnalysisReport, setSignalAnalysisReport] = useState<ActivityAnalysisReport | null>(null);
+  const [signalAnalysisModalOpen, setSignalAnalysisModalOpen] = useState(false);
   const [minimizedRails, setMinimizedRails] = useState<MinimizedRails>({
     input: false,
     layers: false,
@@ -499,6 +520,7 @@ export function App() {
   const { latest, latestRef } = useAudioFeatures();
   const visualSynthRef = useRef<VisualSynthHandle | null>(null);
   const viewportRef = useRef<HTMLElement | null>(null);
+  const signalAnalysisSessionRef = useRef<SignalAnalysisSession | null>(null);
   const audio = useMemo(() => getAudioClient(), []);
   const art = useMemo(() => getArtClient(), []);
 
@@ -512,6 +534,13 @@ export function App() {
       off();
     };
   }, [audio]);
+
+  useEffect(() => {
+    return () => {
+      cleanupSignalAnalysisSession(signalAnalysisSessionRef.current);
+      signalAnalysisSessionRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(LAYER_STORAGE_KEY, JSON.stringify(layers));
@@ -561,6 +590,118 @@ export function App() {
 
   async function stop() {
     await audio.stop();
+  }
+
+  async function startSignalAnalysis() {
+    if (signalAnalysisSessionRef.current || signalAnalysisState === 'analyzing') {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setSignalAnalysisState('error');
+      setSignalAnalysisStatus('Audio recording is unavailable in this browser context');
+      return;
+    }
+
+    try {
+      setSignalAnalysisReport(null);
+      setSignalAnalysisModalOpen(false);
+      setSignalAnalysisWaveform([]);
+      setSignalAnalysisState('recording');
+      setSignalAnalysisStatus('Requesting input access');
+
+      let mediaDeviceId = await resolveBrowserAudioInputId(selectedDevice?.name);
+      let stream = await getAnalysisMediaStream(mediaDeviceId, channelCount);
+      if (!mediaDeviceId && selectedDevice?.name) {
+        mediaDeviceId = await resolveBrowserAudioInputId(selectedDevice.name);
+        if (mediaDeviceId) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = await getAnalysisMediaStream(mediaDeviceId, channelCount);
+        }
+      }
+      const AudioContextConstructor =
+        window.AudioContext ||
+        (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextConstructor) {
+        throw new Error('Audio recording is unavailable in this browser context.');
+      }
+      const audioContext = new AudioContextConstructor({ sampleRate: config.sampleRate });
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      const processor = audioContext.createScriptProcessor(2048, Math.max(1, source.channelCount), 1);
+      const mutedOutput = audioContext.createGain();
+      const chunks: Float32Array[] = [];
+      const selectedChannel = config.channelIndex < Math.max(1, source.channelCount) ? config.channelIndex : null;
+      const session: SignalAnalysisSession = {
+        audioContext,
+        analyser,
+        source,
+        processor,
+        mutedOutput,
+        stream,
+        chunks,
+        sampleRate: audioContext.sampleRate,
+        totalSamples: 0,
+        startedAt: performance.now(),
+        lastWaveformUpdate: 0
+      };
+
+      analyser.fftSize = 2048;
+      mutedOutput.gain.value = 0;
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer;
+        const frame = downmixInputBuffer(input, selectedChannel);
+        chunks.push(frame);
+        session.totalSamples += frame.length;
+        const now = performance.now();
+        if (now - session.lastWaveformUpdate > 80) {
+          setSignalAnalysisWaveform(createWaveformPreview(mergeRecentChunks(chunks, session.sampleRate * 4)));
+          setSignalAnalysisStatus(`Recording ${formatDuration(now - session.startedAt)}`);
+          session.lastWaveformUpdate = now;
+        }
+      };
+
+      source.connect(analyser);
+      source.connect(processor);
+      processor.connect(mutedOutput);
+      mutedOutput.connect(audioContext.destination);
+      signalAnalysisSessionRef.current = session;
+      setSignalAnalysisStatus(`Recording ${selectedDevice?.name ?? 'default input'}`);
+    } catch (error) {
+      signalAnalysisSessionRef.current = null;
+      setSignalAnalysisState('error');
+      setSignalAnalysisStatus(error instanceof Error ? error.message : 'Unable to start analysis recording');
+    }
+  }
+
+  async function stopSignalAnalysis() {
+    const session = signalAnalysisSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    signalAnalysisSessionRef.current = null;
+    cleanupSignalAnalysisSession(session);
+    const samples = mergeChunks(session.chunks, session.totalSamples);
+    setSignalAnalysisWaveform(createWaveformPreview(samples));
+    if (samples.length < session.sampleRate * 0.1) {
+      setSignalAnalysisState('error');
+      setSignalAnalysisStatus('Recording was too short to analyze');
+      return;
+    }
+
+    setSignalAnalysisState('analyzing');
+    setSignalAnalysisStatus(`Analyzing ${formatDuration((samples.length / session.sampleRate) * 1000)} at 1 ms resolution`);
+    try {
+      const report = await analyzeAudioRecording({ samples, sampleRate: session.sampleRate });
+      setSignalAnalysisReport(report);
+      setSignalAnalysisModalOpen(true);
+      setSignalAnalysisState('complete');
+      setSignalAnalysisStatus(`Analyzed ${formatDuration(report.durationMs)}`);
+    } catch (error) {
+      setSignalAnalysisState('error');
+      setSignalAnalysisStatus(error instanceof Error ? error.message : 'Analysis failed');
+    }
   }
 
   function updateStartConfig(update: Partial<AudioStartConfig>, restart = false) {
@@ -862,6 +1003,15 @@ export function App() {
             Stop
           </button>
         </section>
+        <SignalAnalysisPanel
+          state={signalAnalysisState}
+          status={signalAnalysisStatus}
+          waveform={signalAnalysisWaveform}
+          onStart={startSignalAnalysis}
+          onStop={stopSignalAnalysis}
+          onOpenReport={() => setSignalAnalysisModalOpen(true)}
+          hasReport={Boolean(signalAnalysisReport)}
+        />
         <div className="sidebar-bottom">
           <SidebarGainMeter value={latest.rms} gateThreshold={config.gateThreshold} />
           <div className={`gate-pill ${latest.gate ? 'open' : ''}`}>{latest.gate ? 'Gate open' : 'Idle'}</div>
@@ -1035,6 +1185,9 @@ export function App() {
         </section>
         ) : null}
       </aside>
+      {signalAnalysisModalOpen && signalAnalysisReport ? (
+        <ActivityReportModal report={signalAnalysisReport} onClose={() => setSignalAnalysisModalOpen(false)} />
+      ) : null}
     </div>
   );
 }
@@ -1067,6 +1220,140 @@ function RailHeader({
         {minimized ? '+' : '-'}
       </button>
     </div>
+  );
+}
+
+function SignalAnalysisPanel({
+  state,
+  status,
+  waveform,
+  hasReport,
+  onStart,
+  onStop,
+  onOpenReport
+}: {
+  state: SignalAnalysisState;
+  status: string;
+  waveform: number[];
+  hasReport: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onOpenReport: () => void;
+}) {
+  const isRecording = state === 'recording';
+  const isAnalyzing = state === 'analyzing';
+  return (
+    <section className="analysis-panel">
+      <div className="analysis-panel-header">
+        <span>Signal analysis</span>
+        <strong>Activity</strong>
+      </div>
+      <WaveformStrip values={waveform} active={isRecording} />
+      <button type="button" onClick={isRecording ? onStop : onStart} disabled={isAnalyzing}>
+        {isRecording ? 'Stop Analysis' : isAnalyzing ? 'Analyzing' : 'Start Analysis'}
+      </button>
+      {hasReport && !isRecording ? (
+        <button type="button" className="secondary" onClick={onOpenReport}>
+          Show Report
+        </button>
+      ) : null}
+      <div className={`analysis-state ${state === 'recording' ? 'active' : ''} ${state === 'error' ? 'warning' : ''}`}>
+        {status}
+      </div>
+    </section>
+  );
+}
+
+function ActivityReportModal({ report, onClose }: { report: ActivityAnalysisReport; onClose: () => void }) {
+  return createPortal(
+    <div className="analysis-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="analysis-report-title">
+      <section className="analysis-modal">
+        <header className="analysis-modal-header">
+          <div>
+            <span>Audio signal analysis</span>
+            <h2 id="analysis-report-title">Activity ranking</h2>
+          </div>
+          <button type="button" className="secondary" onClick={onClose}>
+            Close
+          </button>
+        </header>
+        <div className="analysis-summary">
+          <DiagnosticStat label="Duration" valueText={formatDuration(report.durationMs)} />
+          <DiagnosticStat label="Rate" valueText={`${Math.round(report.sampleRate / 1000)} kHz`} />
+          <DiagnosticStat label="Metrics" valueText={`${report.rankings.length}`} />
+        </div>
+        <div className="analysis-modal-waveform">
+          <WaveformStrip values={report.waveform} active={false} />
+        </div>
+        <div className="activity-ranking">
+          <div className="activity-ranking-head">
+            <span>Rank</span>
+            <span>Input</span>
+            <span>Activity</span>
+            <span>Shape</span>
+          </div>
+          {report.rankings.map((metric, index) => (
+            <ActivityMetricRow key={metric.key} metric={metric} rank={index + 1} />
+          ))}
+        </div>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
+function ActivityMetricRow({ metric, rank }: { metric: ActivityMetricResult; rank: number }) {
+  return (
+    <div className="activity-row">
+      <span className="activity-rank">{rank}</span>
+      <div className="activity-name">
+        <strong>{metric.label}</strong>
+        <span>
+          min {formatMetricValue(metric.min)} / max {formatMetricValue(metric.max)}
+        </span>
+      </div>
+      <div className="activity-score">
+        <strong>{metric.score.toFixed(1)}</strong>
+        <div className="activity-score-track">
+          <div style={{ width: `${metric.score}%` }} />
+        </div>
+      </div>
+      <Sparkline values={metric.sparkline} />
+    </div>
+  );
+}
+
+function WaveformStrip({ values, active }: { values: number[]; active: boolean }) {
+  return (
+    <div className={`waveform-strip ${active ? 'active' : ''}`} aria-label="Recorded audio waveform">
+      {values.length ? (
+        values.map((value, index) => (
+          <span key={index} style={{ height: `${Math.max(3, Math.min(100, value * 100))}%` }} />
+        ))
+      ) : (
+        <em>No signal yet</em>
+      )}
+    </div>
+  );
+}
+
+function Sparkline({ values }: { values: number[] }) {
+  const width = 160;
+  const height = 38;
+  const points = values.length
+    ? values
+        .map((value, index) => {
+          const x = values.length === 1 ? 0 : (index / (values.length - 1)) * width;
+          const y = height - Math.max(0, Math.min(1, value)) * height;
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(' ')
+    : '';
+
+  return (
+    <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Activity sparkline">
+      <polyline points={points} />
+    </svg>
   );
 }
 
@@ -1613,6 +1900,137 @@ function createRecordingFileName(result: VisualRecordingResult): string {
 function createVideoFileName(durationMs: number): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   return `guitar-art-${stamp}-${Math.max(1, Math.round(durationMs / 1000))}s.webm`;
+}
+
+async function resolveBrowserAudioInputId(selectedDeviceName?: string): Promise<string | null> {
+  if (!navigator.mediaDevices?.enumerateDevices || !selectedDeviceName) {
+    return null;
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const selected = normalizeDeviceName(selectedDeviceName);
+    const input = devices
+      .filter((device) => device.kind === 'audioinput')
+      .find((device) => {
+        const label = normalizeDeviceName(device.label);
+        return label === selected || label.includes(selected) || selected.includes(label);
+      });
+    return input?.deviceId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function getAnalysisMediaStream(mediaDeviceId: string | null, channelCount: number): Promise<MediaStream> {
+  const baseConstraints: MediaTrackConstraints = {
+    channelCount: channelCount > 1 ? channelCount : 1,
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false
+  };
+  if (!mediaDeviceId) {
+    return navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
+  }
+
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...baseConstraints,
+        deviceId: { exact: mediaDeviceId }
+      }
+    });
+  } catch {
+    return navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
+  }
+}
+
+function normalizeDeviceName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function downmixInputBuffer(input: AudioBuffer, channelIndex: number | null): Float32Array {
+  const frame = new Float32Array(input.length);
+  if (channelIndex !== null && channelIndex < input.numberOfChannels) {
+    frame.set(input.getChannelData(channelIndex));
+    return frame;
+  }
+
+  for (let channel = 0; channel < input.numberOfChannels; channel += 1) {
+    const channelData = input.getChannelData(channel);
+    for (let index = 0; index < input.length; index += 1) {
+      frame[index] += channelData[index] / input.numberOfChannels;
+    }
+  }
+  return frame;
+}
+
+function mergeChunks(chunks: Float32Array[], totalSamples: number): Float32Array {
+  const merged = new Float32Array(totalSamples);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function mergeRecentChunks(chunks: Float32Array[], maxSamples: number): Float32Array {
+  let remaining = maxSamples;
+  const recent: Float32Array[] = [];
+  for (let index = chunks.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const chunk = chunks[index];
+    recent.unshift(chunk);
+    remaining -= chunk.length;
+  }
+  const total = recent.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = mergeChunks(recent, total);
+  return merged.length > maxSamples ? merged.slice(merged.length - maxSamples) : merged;
+}
+
+function cleanupSignalAnalysisSession(session: SignalAnalysisSession | null) {
+  if (!session) {
+    return;
+  }
+  session.processor.onaudioprocess = null;
+  safeDisconnect(session.processor);
+  safeDisconnect(session.source);
+  safeDisconnect(session.analyser);
+  safeDisconnect(session.mutedOutput);
+  session.stream.getTracks().forEach((track) => track.stop());
+  void session.audioContext.close().catch(() => undefined);
+}
+
+function safeDisconnect(node: AudioNode) {
+  try {
+    node.disconnect();
+  } catch {
+    // Already disconnected.
+  }
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, durationMs / 1000);
+  if (totalSeconds < 10) {
+    return `${totalSeconds.toFixed(1)}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${Math.round(totalSeconds)}s`;
+}
+
+function formatMetricValue(value: number): string {
+  if (Math.abs(value) >= 100) {
+    return value.toFixed(0);
+  }
+  if (Math.abs(value) >= 10) {
+    return value.toFixed(1);
+  }
+  return value.toFixed(3);
 }
 
 function clampNumber(value: number | undefined, min: number, max: number, fallback: number): number {

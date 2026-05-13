@@ -130,6 +130,7 @@ try {
   const cumulativeButtonCount = await page.getByRole('button', { name: 'Cumulative' }).count();
   const webmButtonCount = await page.getByRole('button', { name: 'WebM' }).count();
   const stopButtonCount = await page.getByRole('button', { name: 'Stop' }).count();
+  const startAnalysisButtonCount = await page.getByRole('button', { name: 'Start Analysis' }).count();
   const spectrumPanelCount = await page.locator('.spectrum-bars').count();
   const guitarGlyphOptionCount = await page.locator('select option[value="guitarGlyph3d"]').count();
   const fretPulseOptionCount = await page.locator('select option[value="fretPulse2d"]').count();
@@ -151,9 +152,9 @@ try {
   if (tunerCount !== 1 || tunerNeedleCount !== 1) {
     throw new Error(`Unexpected tuner shape: panels=${tunerCount} needles=${tunerNeedleCount}`);
   }
-  if (snapshotButtonCount !== 1 || cumulativeButtonCount !== 1 || webmButtonCount !== 1 || stopButtonCount < 2) {
+  if (snapshotButtonCount !== 1 || cumulativeButtonCount !== 1 || webmButtonCount !== 1 || stopButtonCount < 2 || startAnalysisButtonCount !== 1) {
     throw new Error(
-      `Unexpected recording controls: snapshot=${snapshotButtonCount} cumulative=${cumulativeButtonCount} webm=${webmButtonCount} stop=${stopButtonCount}`
+      `Unexpected recording controls: snapshot=${snapshotButtonCount} cumulative=${cumulativeButtonCount} webm=${webmButtonCount} stop=${stopButtonCount} startAnalysis=${startAnalysisButtonCount}`
     );
   }
   if (spectrumPanelCount !== 1 || guitarGlyphOptionCount < 1) {
@@ -168,7 +169,7 @@ try {
     throw new Error(`Canvas appears blank: desktop=${JSON.stringify(desktopPixelStats)} mobile=${JSON.stringify(mobilePixelStats)}`);
   }
 
-  console.log(JSON.stringify({ canvasCount, twoDCanvasCount, meterCount, tunerCount, tunerNeedleCount, snapshotButtonCount, cumulativeButtonCount, webmButtonCount, stopButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, techniqueMapOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
+  console.log(JSON.stringify({ canvasCount, twoDCanvasCount, meterCount, tunerCount, tunerNeedleCount, snapshotButtonCount, cumulativeButtonCount, webmButtonCount, stopButtonCount, startAnalysisButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, techniqueMapOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
 } finally {
   server.kill('SIGTERM');
 }
