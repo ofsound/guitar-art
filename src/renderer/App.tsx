@@ -461,6 +461,9 @@ type CaptureSettings = {
   accumulationAlpha: number;
 };
 
+type RailKey = 'input' | 'layers' | 'dsp';
+type MinimizedRails = Record<RailKey, boolean>;
+
 const DEFAULT_CAPTURE_SETTINGS: CaptureSettings = {
   width: 1920,
   height: 1080,
@@ -480,6 +483,11 @@ export function App() {
   const [videoRecording, setVideoRecording] = useState(false);
   const [visualFullscreen, setVisualFullscreen] = useState(false);
   const [visualQuality, setVisualQuality] = useState<VisualRenderQuality>(loadVisualQuality);
+  const [minimizedRails, setMinimizedRails] = useState<MinimizedRails>({
+    input: false,
+    layers: false,
+    dsp: false
+  });
   const [recordingStatus, setRecordingStatus] = useState('Ready to record');
   const [status, setStatus] = useState<AudioStatus>({
     running: false,
@@ -722,9 +730,30 @@ export function App() {
     setVisualFullscreen(true);
   }
 
+  function toggleRail(key: RailKey) {
+    setMinimizedRails((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  const shellClassName = [
+    'app-shell',
+    minimizedRails.input ? 'input-minimized' : '',
+    minimizedRails.layers ? 'layers-minimized' : '',
+    minimizedRails.dsp ? 'dsp-minimized' : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div className="app-shell">
-      <aside className="control-rail">
+    <div className={shellClassName}>
+      <aside className={`control-rail ${minimizedRails.input ? 'rail-minimized' : ''}`}>
+        <RailHeader
+          kicker="Input"
+          title={minimizedRails.input ? undefined : status.mode === 'live' ? 'Live audio' : 'Simulator'}
+          minimized={minimizedRails.input}
+          onToggle={() => toggleRail('input')}
+        />
+        {!minimizedRails.input ? (
+          <>
         <TunerPanel features={latest} />
 
         <section className="control-group">
@@ -830,16 +859,22 @@ export function App() {
           <SidebarGainMeter value={latest.rms} gateThreshold={config.gateThreshold} />
           <div className={`gate-pill ${latest.gate ? 'open' : ''}`}>{latest.gate ? 'Gate open' : 'Idle'}</div>
         </div>
+          </>
+        ) : null}
       </aside>
 
-      <aside className="layer-rail">
+      <aside className={`layer-rail ${minimizedRails.layers ? 'rail-minimized' : ''}`}>
         <section className="layer-toolbar">
-          <div>
-            <span className="rail-kicker">Layers</span>
-            <strong>{layers.length} active slot{layers.length === 1 ? '' : 's'}</strong>
-          </div>
+          <RailHeader
+            kicker="Layers"
+            title={minimizedRails.layers ? undefined : `${layers.length} active slot${layers.length === 1 ? '' : 's'}`}
+            minimized={minimizedRails.layers}
+            onToggle={() => toggleRail('layers')}
+          />
         </section>
 
+        {!minimizedRails.layers ? (
+          <>
         <section className="preset-panel">
           <label>
             <ControlLabel tooltip={CONTROL_TOOLTIPS.presets}>Presets</ControlLabel>
@@ -885,6 +920,8 @@ export function App() {
             <button onClick={() => addLayer('3d')}>+ 3D</button>
           </div>
         </div>
+          </>
+        ) : null}
       </aside>
 
       <main ref={viewportRef} className={`viewport ${visualFullscreen ? 'visual-fullscreen' : ''}`}>
@@ -904,9 +941,10 @@ export function App() {
         ) : null}
       </main>
 
-      <aside className="capture-rail">
-        <DspSidebar features={latest} />
+      <aside className={`capture-rail ${minimizedRails.dsp ? 'rail-minimized' : ''}`}>
+        <DspSidebar features={latest} minimized={minimizedRails.dsp} onToggle={() => toggleRail('dsp')} />
 
+        {!minimizedRails.dsp ? (
         <section className="record-panel">
           <label>Art capture</label>
           <div className="control-group">
@@ -986,7 +1024,39 @@ export function App() {
           </div>
           <div className={`record-state ${recording ? 'active' : ''}`}>{recordingStatus}</div>
         </section>
+        ) : null}
       </aside>
+    </div>
+  );
+}
+
+function RailHeader({
+  kicker,
+  title,
+  minimized,
+  onToggle
+}: {
+  kicker: string;
+  title?: string;
+  minimized: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rail-header">
+      <div>
+        <span className="rail-kicker">{kicker}</span>
+        {title ? <strong>{title}</strong> : null}
+      </div>
+      <button
+        className="rail-toggle"
+        type="button"
+        aria-label={`${minimized ? 'Maximize' : 'Minimize'} ${kicker} column`}
+        title={`${minimized ? 'Maximize' : 'Minimize'} ${kicker}`}
+        aria-pressed={minimized}
+        onClick={onToggle}
+      >
+        {minimized ? '+' : '-'}
+      </button>
     </div>
   );
 }
@@ -1600,7 +1670,15 @@ function SidebarGainMeter({ value, gateThreshold }: { value: number; gateThresho
   );
 }
 
-function DspSidebar({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
+function DspSidebar({
+  features,
+  minimized,
+  onToggle
+}: {
+  features: ReturnType<typeof useAudioFeatures>['latest'];
+  minimized: boolean;
+  onToggle: () => void;
+}) {
   const voicing = Array.isArray(features.voicing) ? features.voicing : [];
   const chroma = Array.isArray(features.chroma) ? features.chroma : [];
   const logSpectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
@@ -1616,10 +1694,14 @@ function DspSidebar({ features }: { features: ReturnType<typeof useAudioFeatures
 
   return (
     <section className="dsp-sidebar">
-      <div className="dsp-sidebar-header">
-        <span className="rail-kicker">DSP inputs</span>
-        <strong>Signal status</strong>
-      </div>
+      <RailHeader
+        kicker="DSP inputs"
+        title={minimized ? undefined : 'Signal status'}
+        minimized={minimized}
+        onToggle={onToggle}
+      />
+      {!minimized ? (
+        <>
       <div className="dsp-meter-column">
         <Meter label="RMS" value={features.rms} />
         <Meter label="Peak" value={features.peak} alert={features.clipping} />
@@ -1663,6 +1745,8 @@ function DspSidebar({ features }: { features: ReturnType<typeof useAudioFeatures
         <Meter label="Events" value={eventStrength} note={`${events.length} recent`} pulse={eventStrength > 0.4} />
       </div>
       <FeatureDetails features={features} voicingConfidence={voicingConfidence} position={position} />
+        </>
+      ) : null}
     </section>
   );
 }

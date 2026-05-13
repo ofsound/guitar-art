@@ -22,10 +22,25 @@ input {
 }
 
 .app-shell {
+  --input-rail-width: 292px;
+  --layer-rail-width: 344px;
+  --capture-rail-width: 276px;
   display: grid;
-  grid-template-columns: 292px 344px minmax(0, 1fr) 276px;
+  grid-template-columns: var(--input-rail-width) var(--layer-rail-width) minmax(0, 1fr) var(--capture-rail-width);
   height: 100%;
   background: #07090a;
+}
+
+.app-shell.input-minimized {
+  --input-rail-width: 96px;
+}
+
+.app-shell.layers-minimized {
+  --layer-rail-width: 96px;
+}
+
+.app-shell.dsp-minimized {
+  --capture-rail-width: 110px;
 }
 
 .control-rail,
@@ -52,6 +67,12 @@ input {
   position: relative;
   gap: 14px;
   background: #0d1315;
+  overflow: hidden;
+}
+
+.rail-minimized {
+  gap: 0;
+  padding: 14px 10px;
   overflow: hidden;
 }
 
@@ -305,6 +326,51 @@ input[type='range'] {
 .layer-toolbar > div:first-child {
   display: grid;
   gap: 3px;
+}
+
+.rail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.rail-header > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.rail-header strong {
+  min-width: 0;
+  color: #edf4f2;
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.rail-toggle {
+  width: 34px;
+  min-width: 34px;
+  min-height: 30px;
+  padding: 0;
+  color: #ccd7d4;
+  background: #12191b;
+}
+
+.rail-minimized .rail-header {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.rail-minimized .rail-kicker {
+  overflow: hidden;
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.rail-minimized .rail-toggle {
+  width: 100%;
 }
 
 .rail-kicker,
@@ -942,7 +1008,9 @@ input[type='range'] {
 
 @media (max-width: 1100px) {
   .app-shell {
-    grid-template-columns: 250px 310px minmax(0, 1fr) 268px;
+    --input-rail-width: 250px;
+    --layer-rail-width: 310px;
+    --capture-rail-width: 268px;
   }
 
   .diagnostic-grid {
