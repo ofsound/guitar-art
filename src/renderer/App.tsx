@@ -1602,9 +1602,16 @@ function SidebarGainMeter({ value, gateThreshold }: { value: number; gateThresho
 
 function DspSidebar({ features }: { features: ReturnType<typeof useAudioFeatures>['latest'] }) {
   const voicing = Array.isArray(features.voicing) ? features.voicing : [];
+  const chroma = Array.isArray(features.chroma) ? features.chroma : [];
+  const logSpectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
+  const events = Array.isArray(features.guitarEvents) ? features.guitarEvents : [];
   const voicingConfidence = voicing.length
     ? voicing.reduce((sum, candidate) => sum + candidate.confidence, 0) / voicing.length
     : 0;
+  const strongestVoice = voicing.reduce((strongest, candidate) => Math.max(strongest, candidate.confidence), 0);
+  const eventStrength = events.reduce((strongest, event) => Math.max(strongest, event.strength), 0);
+  const chromaPeak = chroma.reduce((strongest, value) => Math.max(strongest, value), 0);
+  const logSpectrumAverage = average(logSpectrum);
   const position = typeof features.stringNumber === 'number' && typeof features.fretNumber === 'number' ? `S${features.stringNumber} F${features.fretNumber}` : '--';
 
   return (
@@ -1620,17 +1627,40 @@ function DspSidebar({ features }: { features: ReturnType<typeof useAudioFeatures
         <Meter label="Mid" value={features.mid} />
         <Meter label="High" value={features.high} />
         <Meter label="Centroid" value={features.spectralCentroid} />
+        <Meter label="Pitch Hz" value={features.pitchConfidence} note={features.pitchHz ? `${features.pitchHz.toFixed(1)} Hz` : '--'} />
         <Meter label="Pitch" value={features.pitchConfidence} note={features.noteName ?? '--'} />
         <Meter label="Stable" value={features.noteStability} />
         <Meter label="Onset" value={features.onset} pulse={features.onset > 0.3} />
+        <Meter label="Gate" value={features.gate ? 1 : 0} note={features.gate ? 'Open' : 'Idle'} pulse={features.gate} />
+        <Meter label="Clip" value={features.clipping ? 1 : 0} note={features.clipping ? 'Clip' : 'OK'} alert={features.clipping} />
+        <Meter label="Chroma" value={chromaPeak} note={`${activeCount(chroma, 0.16)}/12`} />
         <Meter label="Pos" value={features.pitchConfidence} note={position} />
         <Meter label="Voice" value={voicingConfidence} />
         <Meter label="Flux" value={features.spectralFlux} />
+        <Meter label="Rolloff" value={features.spectralRolloff} />
+        <Meter label="Flat" value={features.spectralFlatness} />
+        <Meter label="Zero X" value={features.zeroCrossingRate} />
+        <Meter label="Bright" value={features.brightness} />
+        <Meter label="Noise" value={features.noisiness} />
+        <Meter label="Attack" value={features.attack} pulse={features.attack > 0.3} />
+        <Meter label="Decay" value={features.decay} />
         <Meter label="Pick" value={features.pickNoise} />
         <Meter label="Mute" value={features.muteAmount} />
         <Meter label="Harm" value={features.harmonicRatio} />
         <Meter label="Bend" value={Math.min(1, Math.abs(features.bendCents) / 180)} note={`${features.bendCents >= 0 ? '+' : ''}${features.bendCents.toFixed(0)}c`} />
         <Meter label="Vib" value={features.vibratoDepth} />
+        <Meter label="Vib Rate" value={features.vibratoRate} />
+        <Meter label="Harm Dens" value={features.harmonicDensity} />
+        <Meter label="Chord Root" value={features.chordConfidence} note={features.chordRoot ?? '--'} />
+        <Meter label="Chord Qual" value={features.chordConfidence} note={features.chordQuality ?? '--'} />
+        <Meter label="Chord Name" value={features.chordConfidence} note={features.chordName ?? '--'} />
+        <Meter label="Chord Conf" value={features.chordConfidence} />
+        <Meter label="Spectrum" value={logSpectrumAverage} note={`${logSpectrum.length} bins`} />
+        <Meter label="Contrast" value={features.spectralContrast} />
+        <Meter label="Technique" value={features.guitarTechniqueConfidence} note={(features.guitarTechnique ?? 'idle').replace('_', ' ')} />
+        <Meter label="Tech Conf" value={features.guitarTechniqueConfidence} />
+        <Meter label="Voicing" value={strongestVoice} note={`${voicing.length} notes`} />
+        <Meter label="Events" value={eventStrength} note={`${events.length} recent`} pulse={eventStrength > 0.4} />
       </div>
       <FeatureDetails features={features} voicingConfidence={voicingConfidence} position={position} />
     </section>
@@ -1707,6 +1737,14 @@ function DiagnosticStat({
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value * 100));
+}
+
+function average(values: number[]): number {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function activeCount(values: number[], threshold: number): number {
+  return values.reduce((count, value) => count + (value > threshold ? 1 : 0), 0);
 }
 
 function Meter({ label, value, note, alert, pulse }: { label: string; value: number; note?: string; alert?: boolean; pulse?: boolean }) {
