@@ -346,7 +346,7 @@ function summarizeMetric(metric: ActivityMetricDefinition, values: number[]): Ac
     mean,
     variance,
     samples,
-    sparkline: bucketSeries(normalized, SPARKLINE_POINTS)
+    sparkline: bucketSeries(normalized, SPARKLINE_POINTS, isTransientMetric(metric.key) ? 'peak' : 'mean')
   };
 }
 
@@ -354,7 +354,11 @@ function normalizeMetricValue(metric: ActivityMetricDefinition, value: number): 
   return clamp01((value - metric.min) / Math.max(0.000001, metric.max - metric.min));
 }
 
-function bucketSeries(values: number[], pointCount: number): number[] {
+function isTransientMetric(key: ActivityMetricKey): boolean {
+  return key === 'onset' || key === 'attack' || key === 'decay' || key === 'spectralFlux' || key === 'pickNoise';
+}
+
+function bucketSeries(values: number[], pointCount: number, mode: 'mean' | 'peak' = 'mean'): number[] {
   if (!values.length) {
     return [];
   }
@@ -364,10 +368,13 @@ function bucketSeries(values: number[], pointCount: number): number[] {
   for (let start = 0; start < values.length; start += bucketSize) {
     const end = Math.min(values.length, start + bucketSize);
     let sum = 0;
+    let peak = 0;
     for (let index = start; index < end; index += 1) {
-      sum += values[index] ?? 0;
+      const value = values[index] ?? 0;
+      sum += value;
+      peak = Math.max(peak, value);
     }
-    buckets.push(clamp01(sum / Math.max(1, end - start)));
+    buckets.push(clamp01(mode === 'peak' ? peak : sum / Math.max(1, end - start)));
   }
   return buckets;
 }

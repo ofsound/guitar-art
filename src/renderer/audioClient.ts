@@ -1,4 +1,5 @@
 import type {
+  AnalysisRecordingWaveform,
   AudioDevice,
   AudioFeatures,
   AudioMode,
@@ -11,7 +12,8 @@ import type {
   MediaExportRequest,
   MediaExportResult,
   PngExportRequest,
-  PngExportResult
+  PngExportResult,
+  RawAudioRecording
 } from '../shared/audio';
 import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
 
@@ -88,6 +90,16 @@ const fallbackAudioClient: AudioClient = {
 
     return makeSimulatorFeatures((performance.now() - fallbackStartedAt) / 1000, fallbackParams);
   },
+  startAnalysisRecording: async (): Promise<void> => undefined,
+  getAnalysisRecordingWaveform: async (): Promise<AnalysisRecordingWaveform> => ({
+    durationMs: 0,
+    totalSamples: 0,
+    waveform: []
+  }),
+  stopAnalysisRecording: async (): Promise<RawAudioRecording> => ({
+    sampleRate: DEFAULT_START_CONFIG.sampleRate,
+    samples: []
+  }),
   onStatus: (listener: (status: AudioStatus) => void) => {
     fallbackStatusListeners.add(listener);
     listener(makeFallbackStatus('Electron preload unavailable; browser simulator is ready.'));

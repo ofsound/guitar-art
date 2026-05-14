@@ -26,6 +26,17 @@ export type AudioParamsUpdate = {
   gateThreshold?: number;
 };
 
+export type RawAudioRecording = {
+  sampleRate: number;
+  samples: number[];
+};
+
+export type AnalysisRecordingWaveform = {
+  durationMs: number;
+  totalSamples: number;
+  waveform: number[];
+};
+
 export type GuitarTechnique =
   | 'idle'
   | 'single_note'

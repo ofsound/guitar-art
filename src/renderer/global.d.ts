@@ -1,4 +1,5 @@
 import type {
+  AnalysisRecordingWaveform,
   AudioDevice,
   AudioFeatures,
   AudioMode,
@@ -8,7 +9,8 @@ import type {
   MediaExportRequest,
   MediaExportResult,
   PngExportRequest,
-  PngExportResult
+  PngExportResult,
+  RawAudioRecording
 } from '../shared/audio';
 
 declare global {
@@ -21,6 +23,9 @@ declare global {
         setMode: (mode: AudioMode) => Promise<void>;
         setParams: (params: AudioParamsUpdate) => Promise<void>;
         getLatestFeatures: () => Promise<AudioFeatures>;
+        startAnalysisRecording: (config: AudioStartConfig) => Promise<void>;
+        getAnalysisRecordingWaveform: () => Promise<AnalysisRecordingWaveform>;
+        stopAnalysisRecording: () => Promise<RawAudioRecording>;
         onStatus: (listener: (status: AudioStatus) => void) => () => void;
       };
       art: {

@@ -2,17 +2,20 @@ import { app, BrowserWindow, dialog, ipcMain, systemPreferences } from 'electron
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
-import type { AudioMode, AudioParamsUpdate, AudioStartConfig, MediaExportRequest, MediaExportResult, PngExportRequest, PngExportResult } from '../shared/audio';
+import type { AnalysisRecordingWaveform, AudioMode, AudioParamsUpdate, AudioStartConfig, MediaExportRequest, MediaExportResult, PngExportRequest, PngExportResult, RawAudioRecording } from '../shared/audio';
 import {
   ART_EXPORT_MEDIA,
   ART_EXPORT_PNG,
+  AUDIO_GET_ANALYSIS_RECORDING_WAVEFORM,
   AUDIO_GET_LATEST_FEATURES,
   AUDIO_LIST_DEVICES,
   AUDIO_SET_PARAMS,
   AUDIO_SET_MODE,
   AUDIO_START,
+  AUDIO_START_ANALYSIS_RECORDING,
   AUDIO_STATUS,
-  AUDIO_STOP
+  AUDIO_STOP,
+  AUDIO_STOP_ANALYSIS_RECORDING
 } from '../shared/ipc';
 import { AudioEngineHost } from './nativeAudio';
 
@@ -104,6 +107,14 @@ function registerAudioIpc() {
   });
 
   ipcMain.handle(AUDIO_GET_LATEST_FEATURES, () => audioHost.getLatestFeatures());
+
+  ipcMain.handle(AUDIO_START_ANALYSIS_RECORDING, (_event, config: AudioStartConfig) => {
+    audioHost.startAnalysisRecording(config);
+  });
+
+  ipcMain.handle(AUDIO_GET_ANALYSIS_RECORDING_WAVEFORM, (): AnalysisRecordingWaveform => audioHost.getAnalysisRecordingWaveform());
+
+  ipcMain.handle(AUDIO_STOP_ANALYSIS_RECORDING, (): RawAudioRecording => audioHost.stopAnalysisRecording());
 }
 
 function registerArtIpc() {

@@ -30,6 +30,9 @@ try {
         start: async () => undefined,
         stop: async () => undefined,
         setMode: async () => undefined,
+        startAnalysisRecording: async () => undefined,
+        getAnalysisRecordingWaveform: async () => ({ durationMs: 0, totalSamples: 0, waveform: [] }),
+        stopAnalysisRecording: async () => ({ sampleRate: 48000, samples: [] }),
         getLatestFeatures: async () => {
           const t = performance.now() / 1000;
           const rms = 0.2 + Math.sin(t * 2.1) * 0.12;

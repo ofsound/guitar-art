@@ -180,6 +180,91 @@ const CONTROL_TOOLTIPS: Record<string, string> = {
     '3D Technique Shards. Feeds scaleAmount and directly scales shard length from frame.rms, techniqueIntensity, and frame.attack. Visual effect: higher values makes each shard longer and more fractured during strong attacks or confident technique detection.'
 };
 
+type DspMeterLabel =
+  | 'RMS'
+  | 'Peak'
+  | 'Low'
+  | 'Mid'
+  | 'High'
+  | 'Centroid'
+  | 'Pitch Hz'
+  | 'Pitch'
+  | 'Stable'
+  | 'Onset'
+  | 'Gate'
+  | 'Clip'
+  | 'Chroma'
+  | 'Pos'
+  | 'Voice'
+  | 'Flux'
+  | 'Rolloff'
+  | 'Flat'
+  | 'Zero X'
+  | 'Bright'
+  | 'Noise'
+  | 'Attack'
+  | 'Decay'
+  | 'Pick'
+  | 'Mute'
+  | 'Harm'
+  | 'Bend'
+  | 'Vib'
+  | 'Vib Rate'
+  | 'Harm Dens'
+  | 'Chord Root'
+  | 'Chord Qual'
+  | 'Chord Name'
+  | 'Chord Conf'
+  | 'Spectrum'
+  | 'Contrast'
+  | 'Technique'
+  | 'Tech Conf'
+  | 'Voicing'
+  | 'Events';
+
+const DSP_METER_TOOLTIPS = {
+  RMS: 'Root-mean-square level of the current audio buffer; a smoothed loudness estimate used for gates and overall visual energy.',
+  Peak: 'Highest absolute sample level in the current buffer. Red indicates the signal is close to clipping.',
+  Low: 'Normalized low-band energy, roughly the bass/body portion of the guitar signal.',
+  Mid: 'Normalized mid-band energy, where much of the picked note body and fretboard character sits.',
+  High: 'Normalized high-band energy from brightness, pick edge, string noise, and upper harmonics.',
+  Centroid: 'Spectral center of mass, normalized from dark/low-frequency content toward bright/high-frequency content.',
+  'Pitch Hz': 'Estimated fundamental frequency in hertz. The bar shows pitch confidence; the note shows the detected Hz value.',
+  Pitch: 'Confidence that the engine has a stable fundamental pitch estimate. The note shows the nearest detected pitch name.',
+  Stable: 'How consistently the detected pitch is holding over time; higher values mean less pitch drift or ambiguity.',
+  Onset: 'Short attack detector from sudden level and spectral increases; spikes at note starts, plucks, and strums.',
+  Gate: 'Whether RMS is above the global input gate threshold, opening or idling the live visual response.',
+  Clip: 'Clipping flag from near-full-scale peaks. OK means the current buffer is below the clipping threshold.',
+  Chroma: 'Strongest pitch-class energy across the 12-note chroma vector; the note shows how many pitch classes are active.',
+  Pos: 'Inferred guitar string and fret position for the current pitch. The bar follows pitch confidence.',
+  Voice: 'Average confidence across inferred voicing candidates, summarizing how plausible the detected fretboard shape is.',
+  Flux: 'Positive frame-to-frame spectral change. Higher values mean the frequency balance is moving quickly.',
+  Rolloff: 'High-frequency rolloff estimate, rising when more energy sits in the upper spectrum.',
+  Flat: 'Spectral flatness estimate. Higher values indicate noisier, less tone-like frequency content.',
+  'Zero X': 'Zero-crossing rate of the waveform, often higher for noisy, bright, or distorted signals.',
+  Bright: 'Combined high-band and centroid brightness estimate used by layers for color, shine, and edge intensity.',
+  Noise: 'Combined flatness and zero-crossing estimate for noisy or scratchy content.',
+  Attack: 'Transient strength from rising RMS and spectral flux; emphasizes the front edge of picked notes and strums.',
+  Decay: 'Falling-level strength after a note or gesture, useful for damping and release motion.',
+  Pick: 'Pick-noise estimate from very high frequencies, spectral motion, and brightness.',
+  Mute: 'Palm-mute or damping estimate from decay, flatness, high-frequency content, and reduced pitch stability.',
+  Harm: 'Harmonic ratio estimate from tonal flatness and pitch confidence; higher means clearer pitched harmonic content.',
+  Bend: 'Absolute pitch bend amount in cents relative to the stable pitch reference; the note shows signed cents.',
+  Vib: 'Vibrato depth from recent pitch-bend range.',
+  'Vib Rate': 'Vibrato speed estimate from recent bend direction changes.',
+  'Harm Dens': 'Harmonic density from pitch confidence, harmonic ratio, and low/mid-band support.',
+  'Chord Root': 'Detected chord root note. The bar shows chord confidence.',
+  'Chord Qual': 'Detected chord quality such as major, minor, power, sus, or seventh. The bar shows chord confidence.',
+  'Chord Name': 'Combined detected chord name. The bar shows chord confidence.',
+  'Chord Conf': 'Confidence in the current chord estimate from chroma pattern matching and harmonic density.',
+  Spectrum: 'Average level across the log-spaced spectrum bins shown below the chroma display.',
+  Contrast: 'Difference between strongest and weakest spectral bands, highlighting sharply separated tonal balance.',
+  Technique: 'Current guitar technique classification such as idle, single note, strum, palm mute, bend, or vibrato. The bar shows confidence.',
+  'Tech Conf': 'Confidence in the current guitar technique estimate.',
+  Voicing: 'Strongest inferred string/fret voicing candidate. The note shows how many candidate notes are present.',
+  Events: 'Recent detected guitar events such as plucks, strums, bends, mutes, chord changes, and noise gestures.'
+} satisfies Record<DspMeterLabel, string>;
+
 type ModeRoadmap = {
   description: string;
   dspMappings: string[];
@@ -466,19 +551,6 @@ type CaptureSettings = {
 type RailKey = 'input' | 'layers' | 'dsp';
 type MinimizedRails = Record<RailKey, boolean>;
 type SignalAnalysisState = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error';
-type SignalAnalysisSession = {
-  audioContext: AudioContext;
-  analyser: AnalyserNode;
-  source: MediaStreamAudioSourceNode;
-  processor: ScriptProcessorNode;
-  mutedOutput: GainNode;
-  stream: MediaStream;
-  chunks: Float32Array[];
-  sampleRate: number;
-  totalSamples: number;
-  startedAt: number;
-  lastWaveformUpdate: number;
-};
 
 const DEFAULT_CAPTURE_SETTINGS: CaptureSettings = {
   width: 1920,
@@ -520,7 +592,7 @@ export function App() {
   const { latest, latestRef } = useAudioFeatures();
   const visualSynthRef = useRef<VisualSynthHandle | null>(null);
   const viewportRef = useRef<HTMLElement | null>(null);
-  const signalAnalysisSessionRef = useRef<SignalAnalysisSession | null>(null);
+  const signalAnalysisPollRef = useRef<number | null>(null);
   const audio = useMemo(() => getAudioClient(), []);
   const art = useMemo(() => getArtClient(), []);
 
@@ -537,8 +609,7 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      cleanupSignalAnalysisSession(signalAnalysisSessionRef.current);
-      signalAnalysisSessionRef.current = null;
+      stopSignalAnalysisPolling(signalAnalysisPollRef);
     };
   }, []);
 
@@ -593,13 +664,7 @@ export function App() {
   }
 
   async function startSignalAnalysis() {
-    if (signalAnalysisSessionRef.current || signalAnalysisState === 'analyzing') {
-      return;
-    }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setSignalAnalysisState('error');
-      setSignalAnalysisStatus('Audio recording is unavailable in this browser context');
+    if (signalAnalysisPollRef.current || signalAnalysisState === 'analyzing') {
       return;
     }
 
@@ -608,92 +673,48 @@ export function App() {
       setSignalAnalysisModalOpen(false);
       setSignalAnalysisWaveform([]);
       setSignalAnalysisState('recording');
-      setSignalAnalysisStatus('Requesting input access');
-
-      let mediaDeviceId = await resolveBrowserAudioInputId(selectedDevice?.name);
-      let stream = await getAnalysisMediaStream(mediaDeviceId, channelCount);
-      if (!mediaDeviceId && selectedDevice?.name) {
-        mediaDeviceId = await resolveBrowserAudioInputId(selectedDevice.name);
-        if (mediaDeviceId) {
-          stream.getTracks().forEach((track) => track.stop());
-          stream = await getAnalysisMediaStream(mediaDeviceId, channelCount);
-        }
-      }
-      const AudioContextConstructor =
-        window.AudioContext ||
-        (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextConstructor) {
-        throw new Error('Audio recording is unavailable in this browser context.');
-      }
-      const audioContext = new AudioContextConstructor({ sampleRate: config.sampleRate });
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      const processor = audioContext.createScriptProcessor(2048, Math.max(1, source.channelCount), 1);
-      const mutedOutput = audioContext.createGain();
-      const chunks: Float32Array[] = [];
-      const selectedChannel = config.channelIndex < Math.max(1, source.channelCount) ? config.channelIndex : null;
-      const session: SignalAnalysisSession = {
-        audioContext,
-        analyser,
-        source,
-        processor,
-        mutedOutput,
-        stream,
-        chunks,
-        sampleRate: audioContext.sampleRate,
-        totalSamples: 0,
-        startedAt: performance.now(),
-        lastWaveformUpdate: 0
-      };
-
-      analyser.fftSize = 2048;
-      mutedOutput.gain.value = 0;
-      processor.onaudioprocess = (event) => {
-        const input = event.inputBuffer;
-        const frame = downmixInputBuffer(input, selectedChannel);
-        chunks.push(frame);
-        session.totalSamples += frame.length;
-        const now = performance.now();
-        if (now - session.lastWaveformUpdate > 80) {
-          setSignalAnalysisWaveform(createWaveformPreview(mergeRecentChunks(chunks, session.sampleRate * 4)));
-          setSignalAnalysisStatus(`Recording ${formatDuration(now - session.startedAt)}`);
-          session.lastWaveformUpdate = now;
-        }
-      };
-
-      source.connect(analyser);
-      source.connect(processor);
-      processor.connect(mutedOutput);
-      mutedOutput.connect(audioContext.destination);
-      signalAnalysisSessionRef.current = session;
+      setSignalAnalysisStatus(`Recording ${selectedDevice?.name ?? 'default input'}`);
+      await audio.startAnalysisRecording(config);
+      signalAnalysisPollRef.current = window.setInterval(() => {
+        void audio.getAnalysisRecordingWaveform().then((preview) => {
+          setSignalAnalysisWaveform(preview.waveform);
+          setSignalAnalysisStatus(`Recording ${formatDuration(preview.durationMs)} (${preview.totalSamples.toLocaleString()} samples)`);
+        }).catch(() => undefined);
+      }, 100);
       setSignalAnalysisStatus(`Recording ${selectedDevice?.name ?? 'default input'}`);
     } catch (error) {
-      signalAnalysisSessionRef.current = null;
+      stopSignalAnalysisPolling(signalAnalysisPollRef);
       setSignalAnalysisState('error');
       setSignalAnalysisStatus(error instanceof Error ? error.message : 'Unable to start analysis recording');
     }
   }
 
   async function stopSignalAnalysis() {
-    const session = signalAnalysisSessionRef.current;
-    if (!session) {
+    if (!signalAnalysisPollRef.current) {
       return;
     }
 
-    signalAnalysisSessionRef.current = null;
-    cleanupSignalAnalysisSession(session);
-    const samples = mergeChunks(session.chunks, session.totalSamples);
+    stopSignalAnalysisPolling(signalAnalysisPollRef);
+    let recording: Awaited<ReturnType<typeof audio.stopAnalysisRecording>>;
+    try {
+      recording = await audio.stopAnalysisRecording();
+    } catch (error) {
+      setSignalAnalysisState('error');
+      setSignalAnalysisStatus(error instanceof Error ? error.message : 'Unable to stop analysis recording');
+      return;
+    }
+    const samples = Float32Array.from(recording.samples);
     setSignalAnalysisWaveform(createWaveformPreview(samples));
-    if (samples.length < session.sampleRate * 0.1) {
+    if (samples.length < recording.sampleRate * 0.1) {
       setSignalAnalysisState('error');
       setSignalAnalysisStatus('Recording was too short to analyze');
       return;
     }
 
     setSignalAnalysisState('analyzing');
-    setSignalAnalysisStatus(`Analyzing ${formatDuration((samples.length / session.sampleRate) * 1000)} at 1 ms resolution`);
+    setSignalAnalysisStatus(`Analyzing ${formatDuration((samples.length / recording.sampleRate) * 1000)} at 1 ms resolution`);
     try {
-      const report = await analyzeAudioRecording({ samples, sampleRate: session.sampleRate });
+      const report = await analyzeAudioRecording({ samples, sampleRate: recording.sampleRate });
       setSignalAnalysisReport(report);
       setSignalAnalysisModalOpen(true);
       setSignalAnalysisState('complete');
@@ -1902,114 +1923,10 @@ function createVideoFileName(durationMs: number): string {
   return `guitar-art-${stamp}-${Math.max(1, Math.round(durationMs / 1000))}s.webm`;
 }
 
-async function resolveBrowserAudioInputId(selectedDeviceName?: string): Promise<string | null> {
-  if (!navigator.mediaDevices?.enumerateDevices || !selectedDeviceName) {
-    return null;
-  }
-
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const selected = normalizeDeviceName(selectedDeviceName);
-    const input = devices
-      .filter((device) => device.kind === 'audioinput')
-      .find((device) => {
-        const label = normalizeDeviceName(device.label);
-        return label === selected || label.includes(selected) || selected.includes(label);
-      });
-    return input?.deviceId ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function getAnalysisMediaStream(mediaDeviceId: string | null, channelCount: number): Promise<MediaStream> {
-  const baseConstraints: MediaTrackConstraints = {
-    channelCount: channelCount > 1 ? channelCount : 1,
-    echoCancellation: false,
-    noiseSuppression: false,
-    autoGainControl: false
-  };
-  if (!mediaDeviceId) {
-    return navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
-  }
-
-  try {
-    return await navigator.mediaDevices.getUserMedia({
-      audio: {
-        ...baseConstraints,
-        deviceId: { exact: mediaDeviceId }
-      }
-    });
-  } catch {
-    return navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
-  }
-}
-
-function normalizeDeviceName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\([^)]*\)/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
-
-function downmixInputBuffer(input: AudioBuffer, channelIndex: number | null): Float32Array {
-  const frame = new Float32Array(input.length);
-  if (channelIndex !== null && channelIndex < input.numberOfChannels) {
-    frame.set(input.getChannelData(channelIndex));
-    return frame;
-  }
-
-  for (let channel = 0; channel < input.numberOfChannels; channel += 1) {
-    const channelData = input.getChannelData(channel);
-    for (let index = 0; index < input.length; index += 1) {
-      frame[index] += channelData[index] / input.numberOfChannels;
-    }
-  }
-  return frame;
-}
-
-function mergeChunks(chunks: Float32Array[], totalSamples: number): Float32Array {
-  const merged = new Float32Array(totalSamples);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
-}
-
-function mergeRecentChunks(chunks: Float32Array[], maxSamples: number): Float32Array {
-  let remaining = maxSamples;
-  const recent: Float32Array[] = [];
-  for (let index = chunks.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const chunk = chunks[index];
-    recent.unshift(chunk);
-    remaining -= chunk.length;
-  }
-  const total = recent.reduce((sum, chunk) => sum + chunk.length, 0);
-  const merged = mergeChunks(recent, total);
-  return merged.length > maxSamples ? merged.slice(merged.length - maxSamples) : merged;
-}
-
-function cleanupSignalAnalysisSession(session: SignalAnalysisSession | null) {
-  if (!session) {
-    return;
-  }
-  session.processor.onaudioprocess = null;
-  safeDisconnect(session.processor);
-  safeDisconnect(session.source);
-  safeDisconnect(session.analyser);
-  safeDisconnect(session.mutedOutput);
-  session.stream.getTracks().forEach((track) => track.stop());
-  void session.audioContext.close().catch(() => undefined);
-}
-
-function safeDisconnect(node: AudioNode) {
-  try {
-    node.disconnect();
-  } catch {
-    // Already disconnected.
+function stopSignalAnalysisPolling(ref: { current: number | null }) {
+  if (ref.current !== null) {
+    window.clearInterval(ref.current);
+    ref.current = null;
   }
 }
 
@@ -2295,11 +2212,11 @@ function activeCount(values: number[], threshold: number): number {
   return values.reduce((count, value) => count + (value > threshold ? 1 : 0), 0);
 }
 
-function Meter({ label, value, note, alert, pulse }: { label: string; value: number; note?: string; alert?: boolean; pulse?: boolean }) {
+function Meter({ label, value, note, alert, pulse }: { label: DspMeterLabel; value: number; note?: string; alert?: boolean; pulse?: boolean }) {
   return (
     <div className={`meter ${alert ? 'alert' : ''} ${pulse ? 'pulse' : ''}`}>
       <div className="meter-label">
-        <span>{label}</span>
+        <ControlLabel tooltip={DSP_METER_TOOLTIPS[label]}>{label}</ControlLabel>
         <strong>{note ?? Math.round(value * 100)}</strong>
       </div>
       <div className="meter-track">

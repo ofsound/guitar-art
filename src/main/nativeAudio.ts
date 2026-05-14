@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import type { AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus, GuitarEvent, GuitarTechnique, GuitarVoicingCandidate } from '../shared/audio';
+import type { AnalysisRecordingWaveform, AudioDevice, AudioFeatures, AudioMode, AudioParamsUpdate, AudioStartConfig, AudioStatus, GuitarEvent, GuitarTechnique, GuitarVoicingCandidate, RawAudioRecording } from '../shared/audio';
 import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
 
 type NativeAudioEngine = {
@@ -10,6 +10,9 @@ type NativeAudioEngine = {
   setMode: (mode: AudioMode) => void;
   setParams?: (params: AudioParamsUpdate) => void;
   getLatestFeatures: () => AudioFeatures;
+  startAnalysisRecording?: (config: AudioStartConfig) => void;
+  getAnalysisRecordingWaveform?: () => AnalysisRecordingWaveform;
+  stopAnalysisRecording?: () => RawAudioRecording;
 };
 
 const NOTE_SEQUENCE = [
@@ -161,6 +164,28 @@ export class AudioEngineHost {
     }
 
     return makeSimulatorFeatures((performance.now() - this.startedAt) / 1000, this.simulatorParams);
+  }
+
+  startAnalysisRecording(config: AudioStartConfig): void {
+    if (!this.native?.startAnalysisRecording) {
+      throw new Error('Native audio analysis recording is unavailable.');
+    }
+    this.native.startAnalysisRecording(config);
+  }
+
+  getAnalysisRecordingWaveform(): AnalysisRecordingWaveform {
+    return this.native?.getAnalysisRecordingWaveform?.() ?? {
+      durationMs: 0,
+      totalSamples: 0,
+      waveform: []
+    };
+  }
+
+  stopAnalysisRecording(): RawAudioRecording {
+    return this.native?.stopAnalysisRecording?.() ?? {
+      sampleRate: DEFAULT_START_CONFIG.sampleRate,
+      samples: []
+    };
   }
 }
 

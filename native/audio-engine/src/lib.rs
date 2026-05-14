@@ -63,6 +63,21 @@ pub struct AudioParamsUpdate {
 
 #[napi(object)]
 #[derive(Clone, Debug)]
+pub struct RawAudioRecording {
+    pub sample_rate: u32,
+    pub samples: Vec<f64>,
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct AnalysisRecordingWaveform {
+    pub duration_ms: f64,
+    pub total_samples: u32,
+    pub waveform: Vec<f64>,
+}
+
+#[napi(object)]
+#[derive(Clone, Debug)]
 pub struct GuitarVoicingCandidate {
     pub string_number: u32,
     pub fret_number: u32,
@@ -184,6 +199,13 @@ struct RunningEngine {
     stop: Arc<AtomicBool>,
     stream: Option<cpal::Stream>,
     dsp_thread: Option<JoinHandle<()>>,
+}
+
+struct RawAnalysisRecording {
+    stream: Option<cpal::Stream>,
+    samples: Arc<Mutex<Vec<f32>>>,
+    sample_rate: u32,
+    started_at: Instant,
 }
 
 struct LiveAudioParams {
@@ -401,6 +423,7 @@ pub struct AudioEngine {
     latest: Arc<Mutex<AudioFeatures>>,
     params: Arc<LiveAudioParams>,
     running: Option<RunningEngine>,
+    analysis_recording: Option<RawAnalysisRecording>,
     mode: String,
 }
 
@@ -412,6 +435,7 @@ impl AudioEngine {
             latest: Arc::new(Mutex::new(AudioFeatures::default())),
             params: Arc::new(LiveAudioParams::new(1.0, 0.025)),
             running: None,
+            analysis_recording: None,
             mode: "simulator".to_string(),
         }
     }
@@ -534,11 +558,127 @@ impl AudioEngine {
     pub fn get_latest_features(&self) -> AudioFeatures {
         self.latest.lock().unwrap().clone()
     }
+
+    #[napi(js_name = "startAnalysisRecording")]
+    pub fn start_analysis_recording(&mut self, config: AudioStartConfig) -> Result<()> {
+        let _ = self.stop_analysis_recording_internal();
+
+        let host = cpal::default_host();
+        let device = select_device(&host, config.device_id.as_deref())
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let supported = device
+            .default_input_config()
+            .map_err(|error| Error::from_reason(format!("No default input config: {error}")))?;
+        let sample_format = supported.sample_format();
+        let channels = supported.channels();
+        let stream_config = cpal::StreamConfig {
+            channels,
+            sample_rate: cpal::SampleRate(config.sample_rate),
+            buffer_size: cpal::BufferSize::Fixed(config.buffer_size),
+        };
+        let channel_index = if config.channel_index < channels as u32 {
+            Some(config.channel_index as usize)
+        } else {
+            None
+        };
+        let samples = Arc::new(Mutex::new(Vec::<f32>::with_capacity(config.sample_rate as usize * 20)));
+        let err_fn = |error| eprintln!("CPAL analysis stream error: {error}");
+        let input_gain = config.input_gain as f32;
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => build_recording_stream::<f32>(
+                &device,
+                &stream_config,
+                channels as usize,
+                channel_index,
+                input_gain,
+                samples.clone(),
+                err_fn,
+            ),
+            cpal::SampleFormat::I16 => build_recording_stream::<i16>(
+                &device,
+                &stream_config,
+                channels as usize,
+                channel_index,
+                input_gain,
+                samples.clone(),
+                err_fn,
+            ),
+            cpal::SampleFormat::U16 => build_recording_stream::<u16>(
+                &device,
+                &stream_config,
+                channels as usize,
+                channel_index,
+                input_gain,
+                samples.clone(),
+                err_fn,
+            ),
+            _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+        }
+        .map_err(|error| Error::from_reason(format!("Unable to build analysis input stream: {error}")))?;
+
+        stream.play().map_err(|error| {
+            Error::from_reason(format!("Unable to start analysis input stream: {error}"))
+        })?;
+
+        self.analysis_recording = Some(RawAnalysisRecording {
+            stream: Some(stream),
+            samples,
+            sample_rate: config.sample_rate,
+            started_at: Instant::now(),
+        });
+        Ok(())
+    }
+
+    #[napi(js_name = "getAnalysisRecordingWaveform")]
+    pub fn get_analysis_recording_waveform(&self) -> AnalysisRecordingWaveform {
+        let Some(recording) = self.analysis_recording.as_ref() else {
+            return AnalysisRecordingWaveform {
+                duration_ms: 0.0,
+                total_samples: 0,
+                waveform: Vec::new(),
+            };
+        };
+        let samples = recording.samples.lock().unwrap();
+        let recent_len = (recording.sample_rate as usize * 4).min(samples.len());
+        let start = samples.len().saturating_sub(recent_len);
+        AnalysisRecordingWaveform {
+            duration_ms: recording.started_at.elapsed().as_secs_f64() * 1000.0,
+            total_samples: samples.len().min(u32::MAX as usize) as u32,
+            waveform: waveform_peaks(&samples[start..], 180),
+        }
+    }
+
+    #[napi(js_name = "stopAnalysisRecording")]
+    pub fn stop_analysis_recording(&mut self) -> RawAudioRecording {
+        self.stop_analysis_recording_internal().unwrap_or(RawAudioRecording {
+            sample_rate: 48_000,
+            samples: Vec::new(),
+        })
+    }
 }
 
 impl Drop for AudioEngine {
     fn drop(&mut self) {
         self.stop();
+        let _ = self.stop_analysis_recording_internal();
+    }
+}
+
+impl AudioEngine {
+    fn stop_analysis_recording_internal(&mut self) -> Option<RawAudioRecording> {
+        let mut recording = self.analysis_recording.take()?;
+        drop(recording.stream.take());
+        let samples = recording
+            .samples
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|sample| *sample as f64)
+            .collect::<Vec<_>>();
+        Some(RawAudioRecording {
+            sample_rate: recording.sample_rate,
+            samples,
+        })
     }
 }
 
@@ -646,6 +786,61 @@ where
         err_fn,
         None,
     )
+}
+
+fn build_recording_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    channel_index: Option<usize>,
+    input_gain: f32,
+    samples: Arc<Mutex<Vec<f32>>>,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> std::result::Result<cpal::Stream, cpal::BuildStreamError>
+where
+    T: cpal::Sample + cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    device.build_input_stream(
+        config,
+        move |data: &[T], _| {
+            if let Ok(mut recorded) = samples.lock() {
+                recorded.reserve(data.len() / channels);
+                for frame in data.chunks(channels) {
+                    let sample = channel_index
+                        .and_then(|index| frame.get(index))
+                        .or_else(|| {
+                            frame.iter().max_by(|a, b| {
+                                let a = a.to_sample::<f32>().abs();
+                                let b = b.to_sample::<f32>().abs();
+                                a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                        });
+                    if let Some(sample) = sample {
+                        recorded.push(sample.to_sample::<f32>() * input_gain);
+                    }
+                }
+            }
+        },
+        err_fn,
+        None,
+    )
+}
+
+fn waveform_peaks(samples: &[f32], point_count: usize) -> Vec<f64> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+    let bucket_size = (samples.len() / point_count.max(1)).max(1);
+    let mut waveform = Vec::with_capacity(point_count);
+    for chunk in samples.chunks(bucket_size).take(point_count) {
+        let peak = chunk
+            .iter()
+            .fold(0.0_f32, |acc, sample| acc.max(sample.abs()))
+            .clamp(0.0, 1.0);
+        waveform.push(peak as f64);
+    }
+    waveform
 }
 
 fn run_dsp(

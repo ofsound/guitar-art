@@ -8,6 +8,15 @@ export declare class AudioEngine {
   setMode(mode: string): void
   setParams(params: AudioParamsUpdate): void
   getLatestFeatures(): AudioFeatures
+  startAnalysisRecording(config: AudioStartConfig): void
+  getAnalysisRecordingWaveform(): AnalysisRecordingWaveform
+  stopAnalysisRecording(): RawAudioRecording
+}
+
+export interface AnalysisRecordingWaveform {
+  durationMs: number
+  totalSamples: number
+  waveform: Array<number>
 }
 
 export interface AudioDevice {
@@ -98,4 +107,9 @@ export interface GuitarVoicingCandidate {
   fretNumber: number
   pitchClass: number
   confidence: number
+}
+
+export interface RawAudioRecording {
+  sampleRate: number
+  samples: Array<number>
 }
