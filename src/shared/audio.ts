@@ -1,4 +1,4 @@
-export type AudioMode = 'live' | 'simulator' | 'playback';
+export type AudioMode = 'live' | 'playback';
 
 export type AudioDevice = {
   id: string;

@@ -14,7 +14,8 @@ import type {
   VisualLayerPreset
 } from '../shared/audio';
 import { DEFAULT_LAYER_CONTROLS, DEFAULT_START_CONFIG, DEFAULT_VISUAL_LAYERS } from '../shared/audio';
-import { getArtClient, getAudioClient, getLibraryClient } from './audioClient';
+import { getArtClient, getAudioClient, getLibraryClient, getPlaybackClient } from './audioClient';
+import type { PlaybackTransportState } from './playbackFeatureEngine';
 import type { ActivityAnalysisReport, ActivityMetricResult } from './audioAnalysis';
 import { analyzeAudioRecording, createWaveformPreview } from './audioAnalysis';
 import { useAudioFeatures } from './useAudioFeatures';
@@ -33,6 +34,15 @@ const VISUAL_QUALITY_STORAGE_KEY = 'guitar-art.visualRenderQuality.v1';
 const A4_HZ = 440;
 const A4_MIDI = 69;
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const EMPTY_PLAYBACK_STATE: PlaybackTransportState = {
+  itemId: null,
+  itemName: null,
+  loaded: false,
+  playing: false,
+  durationMs: 0,
+  positionMs: 0,
+  waveform: []
+};
 
 const MODE_LABELS: Record<VisualLayerMode, string> = {
   trails2d: '2D Trails',
@@ -64,7 +74,7 @@ const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
 
 const CONTROL_TOOLTIPS: Record<string, string> = {
   inputSource:
-    'Selects the upstream audio feature source. Live mode requests the native/CoreAudio input path, Playback decodes an internal library file through Web Audio, and Simulator uses the renderer fallback feature stream. Visual effect: changes whether the art reacts to live input, a saved audio file, or synthetic motion.',
+    'Selects the upstream audio feature source. Live mode requests the native/CoreAudio input path, while Playback decodes an internal library file through Web Audio. Visual effect: changes whether the art reacts to live input or a saved audio file.',
   playbackLibrary:
     'Manages the internal Playback library. Imported MP3, WAV, AIFF, and AIF files are copied into app storage, while recorded input is saved as WAV. Visual effect: the selected library item becomes the audio feature stream when Playback is active.',
   usbInput:
@@ -620,6 +630,7 @@ export function App() {
   const [libraryRecordingState, setLibraryRecordingState] = useState<LibraryRecordingState>('idle');
   const [libraryRecordingWaveform, setLibraryRecordingWaveform] = useState<number[]>([]);
   const [libraryRecordingName, setLibraryRecordingName] = useState('Input take');
+  const [playbackState, setPlaybackState] = useState<PlaybackTransportState>(EMPTY_PLAYBACK_STATE);
   const [minimizedRails, setMinimizedRails] = useState<MinimizedRails>({
     input: false,
     layers: false,
@@ -629,7 +640,7 @@ export function App() {
   const [recordingStatus, setRecordingStatus] = useState('Ready to record');
   const [status, setStatus] = useState<AudioStatus>({
     running: false,
-    mode: 'simulator',
+    mode: DEFAULT_START_CONFIG.mode,
     nativeAvailable: false,
     message: 'Starting.'
   });
@@ -639,6 +650,7 @@ export function App() {
   const signalAnalysisPollRef = useRef<number | null>(null);
   const libraryRecordingPollRef = useRef<number | null>(null);
   const audio = useMemo(() => getAudioClient(), []);
+  const playback = useMemo(() => getPlaybackClient(), []);
   const library = useMemo(() => getLibraryClient(), []);
   const art = useMemo(() => getArtClient(), []);
 
@@ -653,6 +665,17 @@ export function App() {
       off();
     };
   }, [audio, library]);
+
+  useEffect(() => {
+    const off = playback.subscribe(setPlaybackState);
+    const timer = window.setInterval(() => {
+      setPlaybackState(playback.getState());
+    }, 80);
+    return () => {
+      off();
+      window.clearInterval(timer);
+    };
+  }, [playback]);
 
   useEffect(() => {
     return () => {
@@ -701,6 +724,28 @@ export function App() {
   );
   const channelCount = selectedDevice?.inputChannels ?? 2;
 
+  useEffect(() => {
+    let cancelled = false;
+    playback
+      .load(selectedLibraryItem, {
+        inputGain: config.inputGain,
+        gateThreshold: config.gateThreshold
+      })
+      .then(() => {
+        if (!cancelled && selectedLibraryItem) {
+          setLibraryStatus(`${selectedLibraryItem.name} ready`);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setLibraryStatus(error instanceof Error ? error.message : 'Unable to load Playback item');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [playback, selectedLibraryItem, config.inputGain, config.gateThreshold]);
+
   async function start(mode: AudioMode = config.mode) {
     const next = { ...config, mode, playbackItemId: mode === 'playback' ? selectedLibraryItem?.id : config.playbackItemId };
     setConfig(next);
@@ -713,6 +758,29 @@ export function App() {
 
   async function stop() {
     await audio.stop();
+  }
+
+  async function togglePlayback() {
+    if (!selectedLibraryItem) {
+      setLibraryStatus('Import or record a Playback library item first.');
+      return;
+    }
+
+    if (playbackState.playing) {
+      playback.pause();
+      setLibraryStatus('Playback paused');
+      return;
+    }
+
+    await start('playback');
+  }
+
+  async function resetPlayback() {
+    playback.reset();
+    if (config.mode === 'playback') {
+      await audio.stop().catch(() => undefined);
+    }
+    setLibraryStatus('Playback reset');
   }
 
   async function startSignalAnalysis() {
@@ -1056,7 +1124,7 @@ export function App() {
       <aside className={`control-rail ${minimizedRails.input ? 'rail-minimized' : ''}`}>
         <RailHeader
           kicker="Input"
-          title={minimizedRails.input ? undefined : status.mode === 'live' ? 'Live audio' : status.mode === 'playback' ? 'Playback' : 'Simulator'}
+          title={minimizedRails.input ? undefined : status.mode === 'playback' ? 'Playback' : 'Live audio'}
           minimized={minimizedRails.input}
           onToggle={() => toggleRail('input')}
         />
@@ -1068,15 +1136,12 @@ export function App() {
           <label>
             <ControlLabel tooltip={CONTROL_TOOLTIPS.inputSource}>Input source</ControlLabel>
           </label>
-          <div className="segmented three">
+          <div className="segmented two">
             <button className={config.mode === 'live' ? 'active' : ''} onClick={() => start('live')}>
               Live
             </button>
             <button className={config.mode === 'playback' ? 'active' : ''} onClick={() => start('playback')}>
               Playback
-            </button>
-            <button className={config.mode === 'simulator' ? 'active' : ''} onClick={() => start('simulator')}>
-              Simulator
             </button>
           </div>
         </section>
@@ -1112,12 +1177,25 @@ export function App() {
               <>
                 <span>{selectedLibraryItem.extension.toUpperCase()}</span>
                 <span>{formatFileSize(selectedLibraryItem.sizeBytes)}</span>
+                {playbackState.durationMs > 0 ? <span>{formatDuration(playbackState.durationMs)}</span> : null}
                 <span>{selectedLibraryItem.source === 'recording' ? 'Recorded' : 'Imported'}</span>
               </>
             ) : (
               <span>Import MP3, WAV, AIF, or AIFF</span>
             )}
           </div>
+          <div className="playback-transport">
+            <button type="button" onClick={togglePlayback} disabled={!selectedLibraryItem}>
+              {playbackState.playing ? 'Pause' : 'Play'}
+            </button>
+            <button type="button" className="secondary" onClick={resetPlayback} disabled={!playbackState.loaded}>
+              Reset
+            </button>
+            <span>
+              {formatDuration(playbackState.positionMs)} / {formatDuration(playbackState.durationMs)}
+            </span>
+          </div>
+          <PlaybackWaveformOverview state={playbackState} />
           <div className="library-recorder">
             <input value={libraryRecordingName} onInput={(event) => setLibraryRecordingName(event.currentTarget.value)} />
             <WaveformStrip values={libraryRecordingWaveform} active={libraryRecordingState === 'recording'} />
@@ -1548,6 +1626,28 @@ function WaveformStrip({ values, active }: { values: number[]; active: boolean }
         ))
       ) : (
         <em>No signal yet</em>
+      )}
+    </div>
+  );
+}
+
+function PlaybackWaveformOverview({ state }: { state: PlaybackTransportState }) {
+  const progress = state.durationMs > 0 ? Math.max(0, Math.min(1, state.positionMs / state.durationMs)) : 0;
+
+  return (
+    <div className="playback-overview" aria-label="Playback waveform overview">
+      {state.waveform.length ? (
+        <>
+          <div className="playback-overview-bars">
+            {state.waveform.map((value, index) => (
+              <span key={index} style={{ height: `${Math.max(4, Math.min(100, value * 100))}%` }} />
+            ))}
+          </div>
+          <div className="playback-overview-progress" style={{ width: `${progress * 100}%` }} />
+          <div className="playback-playhead" style={{ left: `${progress * 100}%` }} />
+        </>
+      ) : (
+        <em>No waveform loaded</em>
       )}
     </div>
   );
@@ -2060,7 +2160,7 @@ function loadConfig(): AudioStartConfig {
   return {
     ...DEFAULT_START_CONFIG,
     ...stored,
-    mode: stored.mode === 'simulator' || stored.mode === 'live' || stored.mode === 'playback' ? stored.mode : DEFAULT_START_CONFIG.mode,
+    mode: stored.mode === 'playback' ? 'playback' : DEFAULT_START_CONFIG.mode,
     playbackItemId: typeof stored.playbackItemId === 'string' ? stored.playbackItemId : undefined,
     channelIndex: typeof stored.channelIndex === 'number' ? Math.max(0, stored.channelIndex) : DEFAULT_START_CONFIG.channelIndex,
     bufferSize: stored.bufferSize === 128 || stored.bufferSize === 256 || stored.bufferSize === 512 ? stored.bufferSize : DEFAULT_START_CONFIG.bufferSize,

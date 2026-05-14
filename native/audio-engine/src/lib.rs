@@ -436,7 +436,7 @@ impl AudioEngine {
             params: Arc::new(LiveAudioParams::new(1.0, 0.025)),
             running: None,
             analysis_recording: None,
-            mode: "simulator".to_string(),
+            mode: "live".to_string(),
         }
     }
 

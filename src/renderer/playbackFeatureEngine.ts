@@ -3,6 +3,16 @@ import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
 
 type PlaybackParams = Pick<AudioStartConfig, 'inputGain' | 'gateThreshold'>;
 
+export type PlaybackTransportState = {
+  itemId: string | null;
+  itemName: string | null;
+  loaded: boolean;
+  playing: boolean;
+  durationMs: number;
+  positionMs: number;
+  waveform: number[];
+};
+
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const GUITAR_STRINGS = [
   { stringNumber: 6, midi: 40 },
@@ -21,7 +31,10 @@ export class PlaybackFeatureEngine {
   private buffer: AudioBuffer | null = null;
   private item: AudioLibraryItem | null = null;
   private startedAt = 0;
+  private pausedAt = 0;
   private playing = false;
+  private waveform: number[] = [];
+  private stateListeners = new Set<(state: PlaybackTransportState) => void>();
   private params: PlaybackParams = {
     inputGain: DEFAULT_START_CONFIG.inputGain,
     gateThreshold: DEFAULT_START_CONFIG.gateThreshold
@@ -43,20 +56,81 @@ export class PlaybackFeatureEngine {
     return this.playing;
   }
 
-  async start(item: AudioLibraryItem, params: PlaybackParams): Promise<void> {
-    this.stop();
+  get hasSession(): boolean {
+    return Boolean(this.item && this.buffer);
+  }
+
+  getState(): PlaybackTransportState {
+    const duration = this.buffer?.duration ?? 0;
+    return {
+      itemId: this.item?.id ?? null,
+      itemName: this.item?.name ?? null,
+      loaded: Boolean(this.item && this.buffer),
+      playing: this.playing,
+      durationMs: duration * 1000,
+      positionMs: this.getPositionSeconds() * 1000,
+      waveform: this.waveform
+    };
+  }
+
+  subscribe(listener: (state: PlaybackTransportState) => void): () => void {
+    this.stateListeners.add(listener);
+    listener(this.getState());
+    return () => {
+      this.stateListeners.delete(listener);
+    };
+  }
+
+  async load(item: AudioLibraryItem, params: PlaybackParams = this.params): Promise<void> {
     this.params = params;
     this.context = this.context ?? new AudioContext();
     if (this.context.state === 'suspended') {
       await this.context.resume();
     }
 
+    if (this.item?.id === item.id && this.buffer) {
+      this.notifyState();
+      return;
+    }
+
+    this.stopSource();
+    this.resetAnalysisState();
+    this.item = item;
+    this.buffer = null;
+    this.waveform = [];
+    this.pausedAt = 0;
+    this.notifyState();
+
     const response = await fetch(item.fileUrl);
     if (!response.ok) {
+      this.item = null;
+      this.notifyState();
       throw new Error(`Unable to load ${item.name}.`);
     }
+
     this.buffer = await this.context.decodeAudioData(await response.arrayBuffer());
-    this.item = item;
+    this.waveform = createWaveformOverview(this.buffer, 240);
+    this.notifyState();
+  }
+
+  async start(item: AudioLibraryItem, params: PlaybackParams): Promise<void> {
+    await this.load(item, params);
+    await this.play();
+  }
+
+  async play(): Promise<void> {
+    if (!this.context || !this.buffer) {
+      return;
+    }
+
+    if (this.context.state === 'suspended') {
+      await this.context.resume();
+    }
+
+    this.stopSource();
+    if (this.pausedAt >= this.buffer.duration) {
+      this.pausedAt = 0;
+    }
     this.analyser = this.context.createAnalyser();
     this.analyser.fftSize = 2048;
     this.analyser.smoothingTimeConstant = 0.42;
@@ -68,25 +142,51 @@ export class PlaybackFeatureEngine {
     this.gain.connect(this.analyser);
     this.analyser.connect(this.context.destination);
     this.source.onended = () => {
+      if (!this.playing) {
+        return;
+      }
+      this.pausedAt = this.buffer?.duration ?? 0;
       this.playing = false;
+      this.notifyState();
     };
-    this.startedAt = this.context.currentTime;
+    this.startedAt = this.context.currentTime - this.pausedAt;
     this.playing = true;
-    this.previousRms = 0;
-    this.previousLow = 0;
-    this.previousMid = 0;
-    this.previousHigh = 0;
-    this.previousPitch = null;
-    this.stablePitch = null;
-    this.noteStability = 0;
-    this.recentBends = [];
-    this.lastEventAt = 0;
-    this.source.start();
+    this.resetAnalysisState();
+    this.source.start(0, this.pausedAt);
+    this.notifyState();
+  }
+
+  pause(): void {
+    if (!this.playing) {
+      return;
+    }
+
+    this.pausedAt = this.getPositionSeconds();
+    this.playing = false;
+    this.stopSource();
+    this.notifyState();
+  }
+
+  reset(): void {
+    this.pausedAt = 0;
+    this.playing = false;
+    this.stopSource();
+    this.resetAnalysisState();
+    this.notifyState();
   }
 
   stop(): void {
+    this.reset();
+    this.buffer = null;
+    this.item = null;
+    this.waveform = [];
+    this.notifyState();
+  }
+
+  private stopSource(): void {
     if (this.source) {
       try {
+        this.source.onended = null;
         this.source.stop();
       } catch {
         // The source may already have ended.
@@ -98,9 +198,6 @@ export class PlaybackFeatureEngine {
     this.source = null;
     this.gain = null;
     this.analyser = null;
-    this.buffer = null;
-    this.item = null;
-    this.playing = false;
   }
 
   setParams(update: AudioParamsUpdate): void {
@@ -117,6 +214,8 @@ export class PlaybackFeatureEngine {
 
     if (this.context.currentTime - this.startedAt >= this.buffer.duration) {
       this.playing = false;
+      this.pausedAt = this.buffer.duration;
+      this.notifyState();
       return DEFAULT_FEATURES;
     }
 
@@ -249,6 +348,49 @@ export class PlaybackFeatureEngine {
       guitarEvents
     };
   }
+
+  private getPositionSeconds(): number {
+    const duration = this.buffer?.duration ?? 0;
+    const position = this.playing && this.context ? this.context.currentTime - this.startedAt : this.pausedAt;
+    return clampNumber(position, 0, duration);
+  }
+
+  private resetAnalysisState(): void {
+    this.previousRms = 0;
+    this.previousLow = 0;
+    this.previousMid = 0;
+    this.previousHigh = 0;
+    this.previousPitch = null;
+    this.stablePitch = null;
+    this.noteStability = 0;
+    this.recentBends = [];
+    this.lastEventAt = 0;
+  }
+
+  private notifyState(): void {
+    const state = this.getState();
+    this.stateListeners.forEach((listener) => listener(state));
+  }
+}
+
+function createWaveformOverview(buffer: AudioBuffer, pointCount: number): number[] {
+  const samples = buffer.length;
+  if (!samples) {
+    return [];
+  }
+
+  return Array.from({ length: pointCount }, (_, index) => {
+    const start = Math.floor((index / pointCount) * samples);
+    const end = Math.max(start + 1, Math.floor(((index + 1) / pointCount) * samples));
+    let peak = 0;
+    for (let channelIndex = 0; channelIndex < buffer.numberOfChannels; channelIndex++) {
+      const channel = buffer.getChannelData(channelIndex);
+      for (let sampleIndex = start; sampleIndex < end; sampleIndex++) {
+        peak = Math.max(peak, Math.abs(channel[sampleIndex] ?? 0));
+      }
+    }
+    return clamp01(peak);
+  });
 }
 
 function rms(values: Float32Array): number {

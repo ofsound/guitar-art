@@ -7,7 +7,6 @@
   "scripts": {
     "start": "electron-forge start",
     "dev": "npm run build:native:debug && electron-forge start",
-    "start:sim": "electron-forge start",
     "package": "npm run build:native && electron-forge package",
     "make": "npm run build:native && electron-forge make",
     "typecheck": "tsc --noEmit",
