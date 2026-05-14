@@ -574,7 +574,7 @@ function createLayerContext(
 }
 
 function is2DLayerMode(mode: VisualLayer['mode']): boolean {
-  return mode === 'trails2d' || mode === 'lineArt2d' || mode === 'fretPulse2d' || mode === 'techniqueMap2d';
+  return mode === 'trails2d' || mode === 'lineArt2d' || mode === 'fretPulse2d' || mode === 'techniqueMap2d' || mode === 'sideScroller2d';
 }
 
 function create2DLayerContext(
@@ -1197,6 +1197,8 @@ function render2DLayer(
     drawFretPulse(layerContext, layer, frame, features, now);
   } else if (layer.mode === 'techniqueMap2d') {
     drawTechniqueMap(layerContext, layer, frame, features, now);
+  } else if (layer.mode === 'sideScroller2d') {
+    drawSideScroller(layerContext, layer, frame, features, dt, now);
   } else {
     drawTrails(layerContext, layer, frame, dt, now);
   }
@@ -1439,6 +1441,198 @@ function drawTechniqueMap(layerContext: TwoDLayerContext, layer: VisualLayer, fr
   });
 
   context.globalCompositeOperation = 'source-over';
+}
+
+function drawSideScroller(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, features: AudioFeatures, dt: number, now: number) {
+  const { context, canvas } = layerContext;
+  const scrollPx = Math.max(1, Math.floor((1.6 + layer.controls.motionAmount * 4.4) * Math.max(0.55, dt * 60)));
+  const playheadX = canvas.width - Math.max(6, Math.floor(canvas.width * 0.008));
+  const gain = layer.controls.scaleAmount;
+  const accent = layer.controls.colorAmount;
+  const pitchConfidence = clamp01(features.pitchConfidence ?? 0);
+  const pitchY = getSideScrollerPitchY(features.pitchHz, features.spectralCentroid, canvas.height);
+  const activity = clamp01(
+    frame.rms * 0.48 +
+      frame.onset * 0.32 +
+      frame.spectralFlux * 0.28 +
+      frame.attack * 0.28 +
+      pitchConfidence * 0.18 +
+      clamp01(features.guitarTechniqueConfidence ?? 0) * 0.12
+  );
+
+  context.globalCompositeOperation = 'source-over';
+  context.drawImage(canvas, -scrollPx, 0);
+  context.clearRect(canvas.width - scrollPx - 1, 0, scrollPx + 1, canvas.height);
+  context.fillStyle = `rgba(7, 10, 11, ${layer.controls.historyFade ?? 0.026})`;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  context.globalCompositeOperation = 'lighter';
+  context.lineCap = 'round';
+  drawSideScrollerSpectrum(context, canvas, layer, frame, features, playheadX, activity, gain);
+  drawSideScrollerChroma(context, canvas, layer, frame, features, playheadX, activity, gain);
+  drawSideScrollerVoicing(context, canvas, layer, frame, features, playheadX, activity, gain);
+
+  if (pitchConfidence > 0.18 || activity > 0.08) {
+    const radius = (5 + activity * 28 + pitchConfidence * 18) * Math.max(0.55, gain);
+    const length = (34 + activity * 140 + frame.noteStability * 62) * Math.max(0.55, gain);
+    const bend = clampSigned((features.bendCents ?? 0) / 220);
+    const hue = wrap01(frame.hue + bend * 0.05);
+    const alpha = Math.min(0.92, 0.18 + activity * 0.5 + pitchConfidence * 0.26);
+
+    context.strokeStyle = `hsla(${Math.round(hue * 360)}, ${74 + frame.high * 20}%, ${48 + activity * 28}%, ${alpha})`;
+    context.lineWidth = Math.max(1.5, radius * 0.34);
+    context.beginPath();
+    context.moveTo(playheadX - length, pitchY - bend * 42 * accent);
+    context.quadraticCurveTo(playheadX - length * 0.42, pitchY - bend * 70 * accent, playheadX, pitchY);
+    context.stroke();
+
+    const color = new THREE.Color().setHSL(hue, 0.82, 0.48 + activity * 0.22);
+    const gradient = context.createRadialGradient(playheadX, pitchY, 1, playheadX, pitchY, radius * 2.4);
+    gradient.addColorStop(0, `rgba(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)}, ${0.32 + alpha * 0.42})`);
+    gradient.addColorStop(0.42, `rgba(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)}, ${0.16 + alpha * 0.22})`);
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    context.fillStyle = gradient;
+    context.beginPath();
+    context.arc(playheadX, pitchY, radius * 2.4, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  drawSideScrollerEvents(context, canvas, layer, frame, features, playheadX, activity, accent);
+
+  const playheadAlpha = 0.18 + activity * 0.42 * Math.max(0.45, accent);
+  const playheadGradient = context.createLinearGradient(playheadX - 10, 0, playheadX + 2, 0);
+  playheadGradient.addColorStop(0, `rgba(90, 190, 210, 0)`);
+  playheadGradient.addColorStop(0.72, `rgba(130, 230, 220, ${playheadAlpha})`);
+  playheadGradient.addColorStop(1, `rgba(255, 255, 255, ${Math.min(0.86, playheadAlpha + frame.onset * 0.36)})`);
+  context.fillStyle = playheadGradient;
+  context.fillRect(playheadX - 10, 0, 12, canvas.height);
+  context.globalCompositeOperation = 'source-over';
+}
+
+function drawSideScrollerSpectrum(
+  context: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  playheadX: number,
+  activity: number,
+  gain: number
+) {
+  const spectrum = Array.isArray(features.logSpectrum) ? features.logSpectrum : [];
+  if (spectrum.length === 0) {
+    return;
+  }
+  const top = canvas.height * 0.08;
+  const bottom = canvas.height * 0.92;
+  const height = bottom - top;
+  spectrum.forEach((raw, index) => {
+    const value = clamp01(raw);
+    if (value < 0.018) {
+      return;
+    }
+    const pct = spectrum.length <= 1 ? 0 : index / (spectrum.length - 1);
+    const y = bottom - pct * height;
+    const binBand = pct < 0.33 ? frame.low : pct < 0.66 ? frame.mid : frame.high;
+    const thickness = Math.max(1, (1 + value * 10 + activity * 7 + binBand * 5) * Math.max(0.5, gain));
+    const length = (10 + value * 86 + activity * 54) * Math.max(0.55, gain);
+    const hue = wrap01(frame.hue + pct * 0.28 + frame.spectralCentroid * 0.06);
+    context.strokeStyle = `hsla(${Math.round(hue * 360)}, ${58 + value * 26}%, ${26 + value * 46}%, ${0.045 + value * 0.24 + activity * 0.1})`;
+    context.lineWidth = thickness;
+    context.beginPath();
+    context.moveTo(playheadX - length, y);
+    context.lineTo(playheadX, y);
+    context.stroke();
+  });
+}
+
+function drawSideScrollerChroma(
+  context: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  playheadX: number,
+  activity: number,
+  gain: number
+) {
+  const chroma = Array.isArray(features.chroma) ? features.chroma : [];
+  chroma.forEach((raw, pitchClass) => {
+    const value = clamp01(raw);
+    if (value < 0.12) {
+      return;
+    }
+    const y = canvas.height * (0.9 - (pitchClass / 11) * 0.78);
+    const length = (8 + value * 64 + activity * 38) * Math.max(0.55, gain);
+    context.strokeStyle = `hsla(${Math.round(wrap01(pitchClass / 12 + frame.hue * 0.08) * 360)}, 78%, ${34 + value * 35}%, ${0.055 + value * 0.22})`;
+    context.lineWidth = Math.max(1, (1.2 + value * 4.8) * Math.max(0.55, gain));
+    context.beginPath();
+    context.moveTo(playheadX - length, y);
+    context.lineTo(playheadX - 2, y);
+    context.stroke();
+  });
+}
+
+function drawSideScrollerVoicing(
+  context: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  playheadX: number,
+  activity: number,
+  gain: number
+) {
+  const voicing = Array.isArray(features.voicing) ? features.voicing : [];
+  voicing.forEach((candidate, index) => {
+    const confidence = clamp01(candidate.confidence);
+    if (confidence < 0.08) {
+      return;
+    }
+    const midi = getVoicingCandidateMidi(candidate.stringNumber, candidate.fretNumber);
+    const y = getSideScrollerMidiY(midi, canvas.height);
+    const x = playheadX - 12 - index * Math.max(8, canvas.width * 0.008);
+    const radius = (3.5 + confidence * 12 + activity * 9) * Math.max(0.55, gain);
+    context.fillStyle = `hsla(${Math.round(wrap01(candidate.pitchClass / 12 + frame.hue * 0.06) * 360)}, 84%, ${42 + confidence * 34}%, ${0.18 + confidence * 0.38})`;
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fill();
+  });
+}
+
+function drawSideScrollerEvents(
+  context: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  layer: VisualLayer,
+  frame: LayerFrame,
+  features: AudioFeatures,
+  playheadX: number,
+  activity: number,
+  accent: number
+) {
+  const events = Array.isArray(features.guitarEvents) ? features.guitarEvents : [];
+  events.forEach((event) => {
+    const age = Math.max(0, features.t - event.t);
+    if (age > 0.9) {
+      return;
+    }
+    const strength = clamp01(event.strength);
+    const eventX = playheadX - age * canvas.width * 0.32 * Math.max(0.35, layer.controls.motionAmount);
+    const eventY = event.pitchHz
+      ? getSideScrollerPitchY(event.pitchHz, features.spectralCentroid, canvas.height)
+      : getSideScrollerMidiY(getVoicingCandidateMidi(event.stringNumber ?? features.stringNumber ?? 3, event.fretNumber ?? features.fretNumber ?? 0), canvas.height);
+    const alpha = (1 - age / 0.9) * strength * Math.max(0.2, accent);
+    const radius = (8 + strength * 26 + frame.onset * 24 + activity * 14) * Math.max(0.45, accent);
+    context.strokeStyle = `hsla(${Math.round(frame.hue * 360 + techniqueHueOffset(event.type))}, 88%, 62%, ${Math.min(0.9, alpha)})`;
+    context.lineWidth = 1 + alpha * 6;
+    context.beginPath();
+    context.moveTo(eventX, eventY - radius);
+    context.lineTo(eventX, eventY + radius);
+    context.stroke();
+    context.beginPath();
+    context.arc(eventX, eventY, radius * 0.42, 0, Math.PI * 2);
+    context.stroke();
+  });
 }
 
 function renderFormsLayer(context: FormsLayerContext, layer: VisualLayer, frame: LayerFrame, features: AudioFeatures, dt: number, index: number) {
@@ -2164,6 +2358,37 @@ function getPitchClassIndex(pitchHz: number | null): number {
   return ((midi % 12) + 12) % 12;
 }
 
+function getSideScrollerPitchY(pitchHz: number | null | undefined, spectralCentroid: number, canvasHeight: number): number {
+  if (pitchHz && pitchHz > 0) {
+    const midi = 69 + 12 * Math.log2(pitchHz / 440);
+    return getSideScrollerMidiY(midi, canvasHeight);
+  }
+  const top = canvasHeight * 0.08;
+  const bottom = canvasHeight * 0.92;
+  return bottom - clamp01(spectralCentroid) * (bottom - top);
+}
+
+function getSideScrollerMidiY(midi: number, canvasHeight: number): number {
+  const top = canvasHeight * 0.08;
+  const bottom = canvasHeight * 0.92;
+  const lowMidi = 40;
+  const highMidi = 84;
+  const pct = Math.max(0, Math.min(1, (midi - lowMidi) / (highMidi - lowMidi)));
+  return bottom - pct * (bottom - top);
+}
+
+function getVoicingCandidateMidi(stringNumber: number, fretNumber: number): number {
+  const openStringMidi: Record<number, number> = {
+    1: 64,
+    2: 59,
+    3: 55,
+    4: 50,
+    5: 45,
+    6: 40
+  };
+  return (openStringMidi[Math.max(1, Math.min(6, Math.round(stringNumber)))] ?? 40) + Math.max(0, Math.min(24, Math.round(fretNumber)));
+}
+
 function spawnParticles(particles: Particle[], maxParticles: number, frame: LayerFrame, burst = 1) {
   const count = Math.floor((8 + frame.onset * 34 + frame.high * 18) * burst);
   for (let i = 0; i < count; i += 1) {
@@ -2248,6 +2473,10 @@ function lerpHue(current: number, target: number, amount: number): number {
 
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
+}
+
+function clampSigned(value: number) {
+  return Math.max(-1, Math.min(1, value));
 }
 
 function wrap01(value: number) {

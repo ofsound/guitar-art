@@ -38,6 +38,7 @@ const MODE_LABELS: Record<VisualLayerMode, string> = {
   lineArt2d: '2D Line Art',
   fretPulse2d: '2D Fret Pulse',
   techniqueMap2d: '2D Technique Map',
+  sideScroller2d: 'Side Scroller 2D',
   forms3d: '3D Forms',
   spectralField3d: '3D Spectral Field',
   chromaConstellation3d: '3D Chroma Constellation',
@@ -51,6 +52,7 @@ const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
   lineArt2d: '2d',
   fretPulse2d: '2d',
   techniqueMap2d: '2d',
+  sideScroller2d: '2d',
   forms3d: '3d',
   spectralField3d: '3d',
   chromaConstellation3d: '3d',
@@ -130,6 +132,14 @@ const CONTROL_TOOLTIPS: Record<string, string> = {
     '2D Technique Map. Sets the background fade alpha drawn over the scrolling history. The DSP lanes and events are unchanged, but older pixels are erased at this rate. Visual effect: lower values preserve longer technique history; higher values make the map clear quickly.',
   eventAccent:
     '2D Technique Map. Feeds colorAmount and multiplies event alpha. Recent guitarEvents are mapped by type into lanes, with strength and age determining visibility. Visual effect: higher values make plucks, strums, bends, mutes, chord changes, and noise marks brighter and more forceful.',
+  sideScrollSpeed:
+    'Side Scroller 2D. Feeds motionAmount. The layer shifts the existing piano-roll history left by a frame-scaled amount and writes the newest spectral/pitch slice at the right edge. Visual effect: higher values make time pass faster and compress musical history horizontally.',
+  sidePitchGain:
+    'Side Scroller 2D. Feeds scaleAmount. Current activity from rms, onset, spectral flux, attack, and pitch confidence uses this multiplier for note-head size, spectrum thickness, and harmonic-lane length. Visual effect: higher values make active notes and busy passages more substantial.',
+  sideHistoryFade:
+    'Side Scroller 2D. Sets the translucent erase pass after the canvas scrolls left. Visual effect: lower values preserve longer piano-roll trails; higher values make older moments disappear faster.',
+  sideEventAccent:
+    'Side Scroller 2D. Feeds colorAmount and scales attack/event flashes, bend tails, voicing markers, and the right-edge playhead brightness. Visual effect: higher values emphasize note starts, strums, and detected guitar gestures.',
   formScale:
     '3D Forms. Feeds scaleAmount. Mesh scale uses frame.rms * scaleAmount plus frame.low, while the geometry switches by pitch class when pitchConfidence and noteStability are high. Visual effect: higher values make the form breathe larger with loudness and low-frequency energy.',
   morphRate:
@@ -380,6 +390,31 @@ const MODE_ROADMAPS: Record<VisualLayerMode, ModeRoadmap> = {
       'Each horizontal lane isolates one guitar behavior.',
       'Events appear as brighter vertical strikes in the lane for their event type.',
       'Chroma adds thin pitch-class traces near the bottom of the map.'
+    ]
+  },
+  sideScroller2d: {
+    description: 'A piano-roll side scroller where the newest musical moment is written on the right edge and fades left as pitch, spectrum, and activity history.',
+    dspMappings: [
+      'The existing canvas shifts left every frame by frame-scaled controls.motionAmount, so time enters on the right and ages leftward.',
+      'features.pitchHz maps to y with a guitar-centered MIDI range; higher pitch produces a taller screen position.',
+      'Pitch confidence, frame.rms, frame.onset, frame.spectralFlux, and frame.attack combine into activity, which sets note-head size, alpha, line width, and spectrum column thickness.',
+      'features.logSpectrum draws a 36-bin vertical spectral slice, with each bin mapped from low at bottom to high at top.',
+      'features.chroma[pitchClass] draws short harmonic lane traces; stronger pitch classes extend farther from the right edge.',
+      'features.voicing[] adds string/fret note markers at pitch-class-derived heights, sized by candidate confidence.',
+      'features.guitarEvents[] add right-edge flashes and short leftward tails by event strength, type, and age.',
+      'features.bendCents bends the current pitch trace up or down from the note head.'
+    ],
+    controlMappings: [
+      'controls.scrollSpeed -> controls.motionAmount -> history scroll speed.',
+      'controls.laneGain -> controls.scaleAmount -> pitch/spectrum/activity thickness.',
+      'controls.historyFade -> background erase alpha.',
+      'controls.eventAccent -> controls.colorAmount -> event, bend, and playhead emphasis.'
+    ],
+    visualMappings: [
+      'The right edge is the current moment.',
+      'Higher notes are drawn higher.',
+      'Louder or busier passages become thicker, brighter, and longer.',
+      'Older details move left and fade like a side-scroller game trail.'
     ]
   },
   forms3d: {
@@ -748,7 +783,7 @@ export function App() {
   }
 
   function addLayer(kind: VisualLayerKind) {
-    const mode = kind === '2d' ? 'lineArt2d' : 'spectralField3d';
+    const mode = kind === '2d' ? 'sideScroller2d' : 'spectralField3d';
     setLayers((prev) => [...prev, createLayer(mode, prev.length)]);
   }
 
@@ -1598,6 +1633,17 @@ function ModeSpecificControls({
     );
   }
 
+  if (layer.mode === 'sideScroller2d') {
+    return (
+      <>
+        <LayerSlider label="Scroll speed" tooltip={CONTROL_TOOLTIPS.sideScrollSpeed} value={control('scrollSpeed', 1.25)} min={0.2} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'scrollSpeed', value)} />
+        <LayerSlider label="Activity gain" tooltip={CONTROL_TOOLTIPS.sidePitchGain} value={control('laneGain', 1.25)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'laneGain', value)} />
+        <LayerSlider label="History fade" tooltip={CONTROL_TOOLTIPS.sideHistoryFade} value={control('historyFade', 0.026)} min={0.006} max={0.12} step={0.001} onChange={(value) => onUpdateControl(layer.id, 'historyFade', value)} />
+        <LayerSlider label="Event accent" tooltip={CONTROL_TOOLTIPS.sideEventAccent} value={control('eventAccent', 1.4)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'eventAccent', value)} />
+      </>
+    );
+  }
+
   if (layer.mode === 'forms3d') {
     return (
       <>
@@ -1776,6 +1822,7 @@ function createModeControls(mode: VisualLayerMode, current: Partial<VisualLayerC
     lineArt2d: { lineComplexity: 1.2, lineWeight: 1, lineDrift: 0.85, symmetry: 1.6 },
     fretPulse2d: { fretSpan: 12, stringWarp: 1.25, pulseDecay: 1.1, markerSize: 1.05, requiresGate: true },
     techniqueMap2d: { scrollSpeed: 1.1, laneGain: 1.15, historyFade: 0.035, eventAccent: 1.25 },
+    sideScroller2d: { scrollSpeed: 1.25, laneGain: 1.25, historyFade: 0.026, eventAccent: 1.4 },
     forms3d: { formScale: 1.1, morphRate: 1.15, spin: 0.9, particleBurst: 1.2, requiresGate: true },
     spectralField3d: { fieldSpread: 1.15, orbitSpeed: 0.9, pointSize: 1, density: 1 },
     chromaConstellation3d: { nodeScale: 1.05, chordTension: 1.3, orbitSpeed: 0.8, particleBloom: 1.2 },
@@ -1801,6 +1848,10 @@ function syncDerivedLayerControls(mode: VisualLayerMode, controls: VisualLayerCo
     next.scaleAmount = Number(next.markerSize ?? 1);
     next.colorAmount = Number(next.pulseDecay ?? 1);
   } else if (mode === 'techniqueMap2d') {
+    next.motionAmount = Number(next.scrollSpeed ?? 1);
+    next.scaleAmount = Number(next.laneGain ?? 1);
+    next.colorAmount = Number(next.eventAccent ?? 1);
+  } else if (mode === 'sideScroller2d') {
     next.motionAmount = Number(next.scrollSpeed ?? 1);
     next.scaleAmount = Number(next.laneGain ?? 1);
     next.colorAmount = Number(next.eventAccent ?? 1);

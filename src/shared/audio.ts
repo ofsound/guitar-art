@@ -151,6 +151,7 @@ export type VisualLayerMode =
   | 'lineArt2d'
   | 'fretPulse2d'
   | 'techniqueMap2d'
+  | 'sideScroller2d'
   | 'forms3d'
   | 'spectralField3d'
   | 'chromaConstellation3d'
