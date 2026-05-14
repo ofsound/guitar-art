@@ -24,6 +24,13 @@ type ShardSeed = {
   techniqueBias: number;
 };
 
+type Raindrop = {
+  x: number;
+  y: number;
+  strength: number;
+  createdAt: number;
+};
+
 type LayerFrame = {
   rms: number;
   peak: number;
@@ -64,6 +71,7 @@ type TwoDLayerContext = BaseLayerContext & {
   trailX: number;
   trailY: number;
   seed: number;
+  raindrops: Map<number, Raindrop>;
   historyPrimed?: boolean;
 };
 
@@ -575,7 +583,7 @@ function createLayerContext(
 }
 
 function is2DLayerMode(mode: VisualLayer['mode']): boolean {
-  return mode === 'trails2d' || mode === 'lineArt2d' || mode === 'fretPulse2d' || mode === 'techniqueMap2d' || mode === 'sideScroller2d';
+  return mode === 'trails2d' || mode === 'lineArt2d' || mode === 'fretPulse2d' || mode === 'raindrops2d' || mode === 'techniqueMap2d' || mode === 'sideScroller2d';
 }
 
 function create2DLayerContext(
@@ -599,6 +607,7 @@ function create2DLayerContext(
     trailX: 0.5,
     trailY: 0.5,
     seed: Math.random() * 1000,
+    raindrops: new Map(),
     smoothed: createEmptyFrame(),
     dispose: () => {
       if (canvas.parentElement === twoDHost) {
@@ -1201,6 +1210,8 @@ function render2DLayer(
     drawLineArt(layerContext, layer, frame, now, index);
   } else if (layer.mode === 'fretPulse2d') {
     drawFretPulse(layerContext, layer, frame, features, now);
+  } else if (layer.mode === 'raindrops2d') {
+    drawRaindrops(layerContext, layer, frame, features);
   } else if (layer.mode === 'techniqueMap2d') {
     drawTechniqueMap(layerContext, layer, frame, features, now);
   } else if (layer.mode === 'sideScroller2d') {
@@ -1378,6 +1389,62 @@ function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame
     context.quadraticCurveTo(x, y - Math.sign(features.bendCents) * 58, x + 48, y - Math.sign(features.bendCents) * 20);
     context.stroke();
   }
+
+  context.globalCompositeOperation = 'source-over';
+}
+
+function drawRaindrops(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, features: AudioFeatures) {
+  const { context, canvas, raindrops } = layerContext;
+  const events = Array.isArray(features.guitarEvents) ? features.guitarEvents : [];
+  const lifetime = 1.25;
+
+  context.globalCompositeOperation = 'source-over';
+  context.fillStyle = `rgba(0, 0, 0, ${frame.gateOpen ? 0.045 : 0.075})`;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  events.forEach((event) => {
+    if ((event.type !== 'pluck' && event.type !== 'note_on') || raindrops.has(event.id)) {
+      return;
+    }
+    raindrops.set(event.id, {
+      x: 0.08 + Math.random() * 0.84,
+      y: 0.08 + Math.random() * 0.84,
+      strength: clamp01(Math.max(event.strength, frame.rms)),
+      createdAt: event.t
+    });
+  });
+
+  context.globalCompositeOperation = 'lighter';
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+
+  raindrops.forEach((drop, id) => {
+    const age = Math.max(0, features.t - drop.createdAt);
+    const progress = age / lifetime;
+    if (progress > 1) {
+      raindrops.delete(id);
+      return;
+    }
+
+    const x = drop.x * canvas.width;
+    const y = drop.y * canvas.height;
+    const fade = Math.pow(1 - progress, 1.35);
+    const strength = clamp01(drop.strength);
+    const maxRadius = Math.min(canvas.width, canvas.height) * (0.12 + strength * 0.28) * layer.controls.scaleAmount;
+    const baseRadius = 8 + progress * maxRadius;
+    const ringCount = 3;
+
+    for (let ring = 0; ring < ringCount; ring += 1) {
+      const ringPhase = ring / ringCount;
+      const radius = baseRadius * (1 + ringPhase * 0.36) + ring * 12;
+      const alpha = fade * (0.34 + strength * 0.5) * (1 - ringPhase * 0.34) * layer.controls.opacity;
+      context.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+      context.lineWidth = 0.9 + strength * 4.4 + (1 - progress) * 1.2;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.stroke();
+    }
+  });
 
   context.globalCompositeOperation = 'source-over';
 }

@@ -170,6 +170,7 @@ export type VisualLayerMode =
   | 'trails2d'
   | 'lineArt2d'
   | 'fretPulse2d'
+  | 'raindrops2d'
   | 'techniqueMap2d'
   | 'sideScroller2d'
   | 'forms3d'

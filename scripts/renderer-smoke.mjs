@@ -112,6 +112,8 @@ try {
     await page.waitForSelector('.spectrum-bars', { timeout: 10_000 });
     await page.locator('.layer-card').first().locator('select').selectOption('fretPulse2d');
     await page.getByRole('button', { name: '+ 2D' }).click();
+    await page.locator('.layer-card').last().locator('select').selectOption('raindrops2d');
+    await page.getByRole('button', { name: '+ 2D' }).click();
     await page.locator('.layer-card').last().locator('select').selectOption('techniqueMap2d');
     await page.getByRole('button', { name: '+ 2D' }).click();
     await page.locator('.layer-card').last().locator('select').selectOption('sideScroller2d');
@@ -139,6 +141,7 @@ try {
   const spectrumPanelCount = await page.locator('.spectrum-bars').count();
   const guitarGlyphOptionCount = await page.locator('select option[value="guitarGlyph3d"]').count();
   const fretPulseOptionCount = await page.locator('select option[value="fretPulse2d"]').count();
+  const raindropsOptionCount = await page.locator('select option[value="raindrops2d"]').count();
   const techniqueMapOptionCount = await page.locator('select option[value="techniqueMap2d"]').count();
   const sideScrollerOptionCount = await page.locator('select option[value="sideScroller2d"]').count();
   const stringResonatorOptionCount = await page.locator('select option[value="stringResonator3d"]').count();
@@ -166,16 +169,16 @@ try {
   if (spectrumPanelCount !== 1 || guitarGlyphOptionCount < 1) {
     throw new Error(`Unexpected guitar diagnostics/glyph controls: spectrum=${spectrumPanelCount} glyphOptions=${guitarGlyphOptionCount}`);
   }
-  if (fretPulseOptionCount < 1 || techniqueMapOptionCount < 1 || sideScrollerOptionCount < 1 || stringResonatorOptionCount < 1 || techniqueShardOptionCount < 1) {
+  if (fretPulseOptionCount < 1 || raindropsOptionCount < 1 || techniqueMapOptionCount < 1 || sideScrollerOptionCount < 1 || stringResonatorOptionCount < 1 || techniqueShardOptionCount < 1) {
     throw new Error(
-      `Unexpected new mode controls: fretPulse=${fretPulseOptionCount} techniqueMap=${techniqueMapOptionCount} sideScroller=${sideScrollerOptionCount} stringResonator=${stringResonatorOptionCount} techniqueShard=${techniqueShardOptionCount}`
+      `Unexpected new mode controls: fretPulse=${fretPulseOptionCount} raindrops=${raindropsOptionCount} techniqueMap=${techniqueMapOptionCount} sideScroller=${sideScrollerOptionCount} stringResonator=${stringResonatorOptionCount} techniqueShard=${techniqueShardOptionCount}`
     );
   }
   if (desktopPixelStats.lit < 12 || desktopPixelStats.avgLuma < 4 || mobilePixelStats.lit < 12 || mobilePixelStats.avgLuma < 4) {
     throw new Error(`Canvas appears blank: desktop=${JSON.stringify(desktopPixelStats)} mobile=${JSON.stringify(mobilePixelStats)}`);
   }
 
-  console.log(JSON.stringify({ canvasCount, twoDCanvasCount, meterCount, tunerCount, tunerNeedleCount, snapshotButtonCount, cumulativeButtonCount, webmButtonCount, stopButtonCount, startAnalysisButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, techniqueMapOptionCount, sideScrollerOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
+  console.log(JSON.stringify({ canvasCount, twoDCanvasCount, meterCount, tunerCount, tunerNeedleCount, snapshotButtonCount, cumulativeButtonCount, webmButtonCount, stopButtonCount, startAnalysisButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, raindropsOptionCount, techniqueMapOptionCount, sideScrollerOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
 } finally {
   server.kill('SIGTERM');
 }

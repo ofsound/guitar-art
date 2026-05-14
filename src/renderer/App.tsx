@@ -52,6 +52,7 @@ const MODE_LABELS: Record<VisualLayerMode, string> = {
   trails2d: '2D Trails',
   lineArt2d: '2D Line Art',
   fretPulse2d: '2D Fret Pulse',
+  raindrops2d: '2D Raindrops',
   techniqueMap2d: '2D Technique Map',
   sideScroller2d: 'Side Scroller 2D',
   forms3d: '3D Forms',
@@ -66,6 +67,7 @@ const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
   trails2d: '2d',
   lineArt2d: '2d',
   fretPulse2d: '2d',
+  raindrops2d: '2d',
   techniqueMap2d: '2d',
   sideScroller2d: '2d',
   forms3d: '3d',
@@ -381,6 +383,25 @@ const MODE_ROADMAPS: Record<VisualLayerMode, ModeRoadmap> = {
       'Recent plucks, strums, bends, mutes, chord changes, and noise radiate rings.',
       'Palm muting thickens string lanes while damping resonance elsewhere.',
       'Bends become curved pitch gestures above or below the note.'
+    ]
+  },
+  raindrops2d: {
+    description: 'A minimal black-and-white 2D ripple field where each detected pluck creates a random expanding ring animation.',
+    dspMappings: [
+      'features.guitarEvents[] supplies pluck and note_on events.',
+      'Each new event id is assigned one random x/y point on the canvas.',
+      'event.strength and frame.rms are represented in the ring size, line weight, and fade.',
+      'Event age expands the rings and fades them out over a short fixed lifetime.'
+    ],
+    controlMappings: [
+      'controls.sensitivity affects event strength through the shared frame calculation.',
+      'controls.opacity sets the whole layer opacity.',
+      'No dedicated raindrop controls are exposed yet.'
+    ],
+    visualMappings: [
+      'Each pluck becomes a distinct white ripple at a random point.',
+      'Stronger attacks create larger and brighter rings.',
+      'The layer intentionally ignores pitch, string, fret, and color.'
     ]
   },
   techniqueMap2d: {
@@ -1936,6 +1957,10 @@ function ModeSpecificControls({
     );
   }
 
+  if (layer.mode === 'raindrops2d') {
+    return null;
+  }
+
   if (layer.mode === 'techniqueMap2d') {
     return (
       <>
@@ -2161,6 +2186,10 @@ function syncDerivedLayerControls(mode: VisualLayerMode, controls: VisualLayerCo
     next.motionAmount = Number(next.stringWarp ?? 1);
     next.scaleAmount = Number(next.markerSize ?? 1);
     next.colorAmount = Number(next.pulseDecay ?? 1);
+  } else if (mode === 'raindrops2d') {
+    next.motionAmount = Number(next.motionAmount ?? 1);
+    next.scaleAmount = Number(next.scaleAmount ?? 1);
+    next.colorAmount = 0;
   } else if (mode === 'techniqueMap2d') {
     next.motionAmount = Number(next.scrollSpeed ?? 1);
     next.scaleAmount = Number(next.laneGain ?? 1);
