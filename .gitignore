@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Rust
+native/audio-engine/target/
+
+# Electron / Forge build output
+out/
+.vite/
+src/renderer/.vite/
+
+# OS
+.DS_Store
+
+# Logs / env (common)
+*.log
+.env
+.env.*.local
