@@ -64,6 +64,7 @@ type TwoDLayerContext = BaseLayerContext & {
   trailX: number;
   trailY: number;
   seed: number;
+  historyPrimed?: boolean;
 };
 
 type StringResonatorLayerContext = BaseLayerContext & {
@@ -1047,8 +1048,13 @@ function resizeCanvasLayer(layer: TwoDLayerContext, width: number, height: numbe
   }
   layer.canvas.width = canvasWidth;
   layer.canvas.height = canvasHeight;
-  layer.context.fillStyle = '#0a0e10';
-  layer.context.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+  layer.historyPrimed = false;
+  if (layer.mode === 'sideScroller2d') {
+    layer.context.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+  } else {
+    layer.context.fillStyle = '#0a0e10';
+    layer.context.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+  }
 }
 
 function setLayerRenderOrder(context: LayerContext, index: number) {
@@ -1445,6 +1451,10 @@ function drawTechniqueMap(layerContext: TwoDLayerContext, layer: VisualLayer, fr
 
 function drawSideScroller(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, features: AudioFeatures, dt: number, now: number) {
   const { context, canvas } = layerContext;
+  if (!layerContext.historyPrimed) {
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    layerContext.historyPrimed = true;
+  }
   const scrollPx = Math.max(1, Math.floor((1.6 + layer.controls.motionAmount * 4.4) * Math.max(0.55, dt * 60)));
   const playheadX = canvas.width - Math.max(6, Math.floor(canvas.width * 0.008));
   const gain = layer.controls.scaleAmount;
@@ -1463,10 +1473,12 @@ function drawSideScroller(layerContext: TwoDLayerContext, layer: VisualLayer, fr
   context.globalCompositeOperation = 'source-over';
   context.drawImage(canvas, -scrollPx, 0);
   context.clearRect(canvas.width - scrollPx - 1, 0, scrollPx + 1, canvas.height);
-  context.fillStyle = `rgba(7, 10, 11, ${layer.controls.historyFade ?? 0.026})`;
+  const historyFade = Math.max(0, layer.controls.historyFade ?? 0.014);
+  context.globalCompositeOperation = 'destination-out';
+  context.fillStyle = `rgba(0, 0, 0, ${Math.min(0.08, historyFade * 0.42)})`;
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  context.globalCompositeOperation = 'lighter';
+  context.globalCompositeOperation = 'screen';
   context.lineCap = 'round';
   drawSideScrollerSpectrum(context, canvas, layer, frame, features, playheadX, activity, gain);
   drawSideScrollerChroma(context, canvas, layer, frame, features, playheadX, activity, gain);

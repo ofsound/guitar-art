@@ -140,7 +140,7 @@ const CONTROL_TOOLTIPS: Record<string, string> = {
   sidePitchGain:
     'Side Scroller 2D. Feeds scaleAmount. Current activity from rms, onset, spectral flux, attack, and pitch confidence uses this multiplier for note-head size, spectrum thickness, and harmonic-lane length. Visual effect: higher values make active notes and busy passages more substantial.',
   sideHistoryFade:
-    'Side Scroller 2D. Sets the translucent erase pass after the canvas scrolls left. Visual effect: lower values preserve longer piano-roll trails; higher values make older moments disappear faster.',
+    'Side Scroller 2D. Sets the color-preserving opacity fade after the canvas scrolls left. Visual effect: lower values keep older piano-roll trails saturated and sharp for longer; higher values make older moments disappear faster.',
   sideEventAccent:
     'Side Scroller 2D. Feeds colorAmount and scales attack/event flashes, bend tails, voicing markers, and the right-edge playhead brightness. Visual effect: higher values emphasize note starts, strums, and detected guitar gestures.',
   formScale:
@@ -385,7 +385,7 @@ const MODE_ROADMAPS: Record<VisualLayerMode, ModeRoadmap> = {
     controlMappings: [
       'controls.scrollSpeed -> controls.motionAmount -> canvas shift and event age-to-x speed.',
       'controls.laneGain -> controls.scaleAmount -> lane bar height multiplier.',
-      'controls.historyFade -> background erase alpha.',
+      'controls.historyFade -> color-preserving history opacity fade.',
       'controls.eventAccent -> controls.colorAmount -> guitar event alpha multiplier.'
     ],
     visualMappings: [
@@ -1798,7 +1798,7 @@ function ModeSpecificControls({
       <>
         <LayerSlider label="Scroll speed" tooltip={CONTROL_TOOLTIPS.sideScrollSpeed} value={control('scrollSpeed', 1.25)} min={0.2} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'scrollSpeed', value)} />
         <LayerSlider label="Activity gain" tooltip={CONTROL_TOOLTIPS.sidePitchGain} value={control('laneGain', 1.25)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'laneGain', value)} />
-        <LayerSlider label="History fade" tooltip={CONTROL_TOOLTIPS.sideHistoryFade} value={control('historyFade', 0.026)} min={0.006} max={0.12} step={0.001} onChange={(value) => onUpdateControl(layer.id, 'historyFade', value)} />
+        <LayerSlider label="History fade" tooltip={CONTROL_TOOLTIPS.sideHistoryFade} value={control('historyFade', 0.014)} min={0.001} max={0.08} step={0.001} onChange={(value) => onUpdateControl(layer.id, 'historyFade', value)} />
         <LayerSlider label="Event accent" tooltip={CONTROL_TOOLTIPS.sideEventAccent} value={control('eventAccent', 1.4)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'eventAccent', value)} />
       </>
     );
@@ -1982,7 +1982,7 @@ function createModeControls(mode: VisualLayerMode, current: Partial<VisualLayerC
     lineArt2d: { lineComplexity: 1.2, lineWeight: 1, lineDrift: 0.85, symmetry: 1.6 },
     fretPulse2d: { fretSpan: 12, stringWarp: 1.25, pulseDecay: 1.1, markerSize: 1.05, requiresGate: true },
     techniqueMap2d: { scrollSpeed: 1.1, laneGain: 1.15, historyFade: 0.035, eventAccent: 1.25 },
-    sideScroller2d: { scrollSpeed: 1.25, laneGain: 1.25, historyFade: 0.026, eventAccent: 1.4 },
+    sideScroller2d: { scrollSpeed: 1.25, laneGain: 1.25, historyFade: 0.014, eventAccent: 1.4 },
     forms3d: { formScale: 1.1, morphRate: 1.15, spin: 0.9, particleBurst: 1.2, requiresGate: true },
     spectralField3d: { fieldSpread: 1.15, orbitSpeed: 0.9, pointSize: 1, density: 1 },
     chromaConstellation3d: { nodeScale: 1.05, chordTension: 1.3, orbitSpeed: 0.8, particleBloom: 1.2 },
