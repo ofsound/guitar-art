@@ -831,6 +831,12 @@ input[type='range'] {
   opacity: 0.64;
 }
 
+.layer-card.dragging {
+  position: relative;
+  z-index: 6;
+  opacity: 0.88;
+}
+
 .layer-card-minimized {
   align-self: start;
   gap: 0;
@@ -840,17 +846,44 @@ input[type='range'] {
 
 .layer-card-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   min-height: 28px;
 }
 
-.layer-card-summary > div:first-child {
+.layer-card-summary-main {
   display: flex;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
+}
+
+.layer-drag-handle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-color: rgba(255, 255, 255, 0.09);
+  color: #9fb0ad;
+  background: #0e1517;
+  cursor: grab;
+  touch-action: none;
+}
+
+.layer-drag-handle:active {
+  cursor: grabbing;
+}
+
+.layer-drag-handle span {
+  width: 13px;
+  height: 17px;
+  opacity: 0.86;
+  background-image: radial-gradient(circle, currentColor 1.45px, transparent 1.65px);
+  background-position: 0 1px;
+  background-size: 6px 6px;
 }
 
 .layer-card-summary strong {

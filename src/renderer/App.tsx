@@ -1,3 +1,7 @@
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -653,6 +657,16 @@ export function App() {
   const playback = useMemo(() => getPlaybackClient(), []);
   const library = useMemo(() => getLibraryClient(), []);
   const art = useMemo(() => getArtClient(), []);
+  const layerDragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 4
+      }
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates
+    })
+  );
 
   useEffect(() => {
     audio.listDevices().then(setDevices).catch(() => setDevices([]));
@@ -985,6 +999,25 @@ export function App() {
       next.splice(nextIndex, 0, layer);
       return next;
     });
+  }
+
+  function reorderLayers(activeId: string, overId: string) {
+    setLayers((prev) => {
+      const oldIndex = prev.findIndex((layer) => layer.id === activeId);
+      const newIndex = prev.findIndex((layer) => layer.id === overId);
+      if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) {
+        return prev;
+      }
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  }
+
+  function handleLayerDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+    reorderLayers(String(active.id), String(over.id));
   }
 
   function removeLayer(id: string) {
@@ -1350,23 +1383,27 @@ export function App() {
           </select>
         </section>
 
-        <div className="layer-stack">
-          {layers.map((layer, index) => (
-            <LayerEditor
-              key={layer.id}
-              layer={layer}
-              index={index}
-              isFirst={index === 0}
-              isLast={index === layers.length - 1}
-              isMinimized={minimizedLayerIds.includes(layer.id)}
-              onUpdate={updateLayer}
-              onUpdateControl={updateLayerControl}
-              onMove={moveLayer}
-              onRemove={removeLayer}
-              onToggleMinimized={toggleLayerCard}
-            />
-          ))}
-        </div>
+        <DndContext sensors={layerDragSensors} collisionDetection={closestCenter} onDragEnd={handleLayerDragEnd}>
+          <SortableContext items={layers.map((layer) => layer.id)} strategy={verticalListSortingStrategy}>
+            <div className="layer-stack">
+              {layers.map((layer, index) => (
+                <LayerEditor
+                  key={layer.id}
+                  layer={layer}
+                  index={index}
+                  isFirst={index === 0}
+                  isLast={index === layers.length - 1}
+                  isMinimized={minimizedLayerIds.includes(layer.id)}
+                  onUpdate={updateLayer}
+                  onUpdateControl={updateLayerControl}
+                  onMove={moveLayer}
+                  onRemove={removeLayer}
+                  onToggleMinimized={toggleLayerCard}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
         <div className="layer-add-footer">
           <div className="layer-add-row">
             <button onClick={() => addLayer('2d')}>+ 2D</button>
@@ -1697,12 +1734,29 @@ function LayerEditor({
   onToggleMinimized: (id: string) => void;
 }) {
   const modeOptions = Object.entries(MODE_LABELS).filter(([mode]) => MODE_KIND[mode as VisualLayerMode] === layer.kind);
+  const { attributes, listeners, setActivatorNodeRef, setNodeRef, transform, transition, isDragging } = useSortable({ id: layer.id });
+  const sortableStyle: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition
+  };
+  const cardClassName = `layer-card ${layer.enabled ? '' : 'muted'} ${isDragging ? 'dragging' : ''}`;
 
   if (isMinimized) {
     return (
-      <section className={`layer-card layer-card-minimized ${layer.enabled ? '' : 'muted'}`}>
+      <section ref={setNodeRef} className={`${cardClassName} layer-card-minimized`} style={sortableStyle}>
         <div className="layer-card-summary">
-          <div>
+          <button
+            ref={setActivatorNodeRef}
+            className="layer-drag-handle"
+            type="button"
+            aria-label={`Reorder ${layer.name}`}
+            title={`Reorder ${layer.name}`}
+            {...attributes}
+            {...listeners}
+          >
+            <span aria-hidden="true" />
+          </button>
+          <div className="layer-card-summary-main">
             <span>Layer {index + 1}</span>
             <strong>{layer.name}</strong>
           </div>
@@ -1722,7 +1776,7 @@ function LayerEditor({
   }
 
   return (
-    <section className={`layer-card ${layer.enabled ? '' : 'muted'}`}>
+    <section ref={setNodeRef} className={cardClassName} style={sortableStyle}>
       <div className="layer-card-top">
         <div>
           <span>Layer {index + 1}</span>
