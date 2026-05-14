@@ -2,6 +2,8 @@ import type {
   AnalysisRecordingWaveform,
   AudioDevice,
   AudioFeatures,
+  AudioLibraryItem,
+  AudioLibraryRecordResult,
   AudioMode,
   AudioParamsUpdate,
   AudioStartConfig,
@@ -16,8 +18,10 @@ import type {
   RawAudioRecording
 } from '../shared/audio';
 import { DEFAULT_FEATURES, DEFAULT_START_CONFIG } from '../shared/audio';
+import { PlaybackFeatureEngine } from './playbackFeatureEngine';
 
 type AudioClient = Window['guitarArt']['audio'];
+type LibraryClient = Window['guitarArt']['library'];
 type ArtClient = Window['guitarArt']['art'];
 
 const NOTES = [
@@ -51,9 +55,19 @@ let fallbackParams = {
   gateThreshold: DEFAULT_START_CONFIG.gateThreshold
 };
 const fallbackStatusListeners = new Set<(status: AudioStatus) => void>();
+const playbackEngine = new PlaybackFeatureEngine();
+let wrappedAudioClient: AudioClient | null = null;
 
 export function getAudioClient(): AudioClient {
-  return window.guitarArt?.audio ?? fallbackAudioClient;
+  if (!window.guitarArt?.audio) {
+    return fallbackAudioClient;
+  }
+  wrappedAudioClient = wrappedAudioClient ?? createAudioClient(window.guitarArt.audio, getLibraryClient());
+  return wrappedAudioClient;
+}
+
+export function getLibraryClient(): LibraryClient {
+  return window.guitarArt?.library ?? fallbackLibraryClient;
 }
 
 export function getArtClient(): ArtClient {
@@ -65,7 +79,7 @@ const fallbackAudioClient: AudioClient = {
   start: async (config: AudioStartConfig): Promise<void> => {
     fallbackStartedAt = performance.now();
     fallbackRunning = true;
-    fallbackMode = config.mode === 'live' ? 'simulator' : config.mode;
+    fallbackMode = config.mode === 'live' || config.mode === 'playback' ? 'simulator' : config.mode;
     fallbackParams = {
       inputGain: config.inputGain,
       gateThreshold: config.gateThreshold
@@ -77,7 +91,7 @@ const fallbackAudioClient: AudioClient = {
     emitFallbackStatus('Simulator stopped.');
   },
   setMode: async (mode: AudioMode): Promise<void> => {
-    fallbackMode = mode === 'live' ? 'simulator' : mode;
+    fallbackMode = mode === 'live' || mode === 'playback' ? 'simulator' : mode;
     emitFallbackStatus('Electron preload unavailable; simulator mode selected.');
   },
   setParams: async (params: AudioParamsUpdate): Promise<void> => {
@@ -109,6 +123,34 @@ const fallbackAudioClient: AudioClient = {
   }
 };
 
+const fallbackLibraryClient: LibraryClient = {
+  list: async (): Promise<AudioLibraryItem[]> => [],
+  import: async (): Promise<AudioLibraryItem[]> => [],
+  delete: async (): Promise<void> => undefined,
+  startRecording: async (): Promise<void> => undefined,
+  getRecordingWaveform: async (): Promise<AnalysisRecordingWaveform> => ({
+    durationMs: 0,
+    totalSamples: 0,
+    waveform: []
+  }),
+  stopRecording: async (): Promise<AudioLibraryRecordResult> => ({
+    item: {
+      id: 'fallback',
+      name: 'Browser recording',
+      fileName: 'browser-recording.wav',
+      extension: 'wav',
+      fileUrl: '',
+      sizeBytes: 0,
+      createdAt: Date.now(),
+      source: 'recording'
+    },
+    recording: {
+      sampleRate: DEFAULT_START_CONFIG.sampleRate,
+      samples: []
+    }
+  })
+};
+
 const fallbackArtClient: ArtClient = {
   exportPng: async (request: PngExportRequest): Promise<PngExportResult> => {
     const anchor = document.createElement('a');
@@ -137,6 +179,54 @@ function makeFallbackStatus(message: string): AudioStatus {
     mode: fallbackMode,
     nativeAvailable: false,
     message
+  };
+}
+
+function createAudioClient(base: AudioClient, library: LibraryClient): AudioClient {
+  return {
+    listDevices: () => base.listDevices(),
+    start: async (config: AudioStartConfig): Promise<void> => {
+      if (config.mode === 'playback') {
+        const items = await library.list();
+        const item = items.find((candidate) => candidate.id === config.playbackItemId) ?? items[0];
+        if (!item) {
+          throw new Error('Import or record a Playback library item first.');
+        }
+        await base.start({ ...config, mode: 'playback', playbackItemId: item.id });
+        await playbackEngine.start(item, {
+          inputGain: config.inputGain,
+          gateThreshold: config.gateThreshold
+        });
+        return;
+      }
+
+      playbackEngine.stop();
+      await base.start(config);
+    },
+    stop: async (): Promise<void> => {
+      playbackEngine.stop();
+      await base.stop();
+    },
+    setMode: async (mode: AudioMode): Promise<void> => {
+      if (mode !== 'playback') {
+        playbackEngine.stop();
+      }
+      await base.setMode(mode);
+    },
+    setParams: async (params: AudioParamsUpdate): Promise<void> => {
+      playbackEngine.setParams(params);
+      await base.setParams(params);
+    },
+    getLatestFeatures: async (): Promise<AudioFeatures> => {
+      if (playbackEngine.active) {
+        return playbackEngine.getLatestFeatures();
+      }
+      return base.getLatestFeatures();
+    },
+    startAnalysisRecording: (config: AudioStartConfig) => base.startAnalysisRecording(config),
+    getAnalysisRecordingWaveform: () => base.getAnalysisRecordingWaveform(),
+    stopAnalysisRecording: () => base.stopAnalysisRecording(),
+    onStatus: (listener: (status: AudioStatus) => void) => base.onStatus(listener)
   };
 }
 

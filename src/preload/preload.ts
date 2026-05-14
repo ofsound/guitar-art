@@ -3,6 +3,8 @@ import type {
   AnalysisRecordingWaveform,
   AudioDevice,
   AudioFeatures,
+  AudioLibraryItem,
+  AudioLibraryRecordResult,
   AudioMode,
   AudioParamsUpdate,
   AudioStartConfig,
@@ -18,6 +20,12 @@ import {
   ART_EXPORT_PNG,
   AUDIO_GET_ANALYSIS_RECORDING_WAVEFORM,
   AUDIO_GET_LATEST_FEATURES,
+  AUDIO_LIBRARY_DELETE,
+  AUDIO_LIBRARY_GET_RECORDING_WAVEFORM,
+  AUDIO_LIBRARY_IMPORT,
+  AUDIO_LIBRARY_LIST,
+  AUDIO_LIBRARY_START_RECORDING,
+  AUDIO_LIBRARY_STOP_RECORDING,
   AUDIO_LIST_DEVICES,
   AUDIO_SET_PARAMS,
   AUDIO_SET_MODE,
@@ -46,6 +54,14 @@ const api = {
         ipcRenderer.off(AUDIO_STATUS, wrapped);
       };
     }
+  },
+  library: {
+    list: (): Promise<AudioLibraryItem[]> => ipcRenderer.invoke(AUDIO_LIBRARY_LIST),
+    import: (): Promise<AudioLibraryItem[]> => ipcRenderer.invoke(AUDIO_LIBRARY_IMPORT),
+    delete: (id: string): Promise<void> => ipcRenderer.invoke(AUDIO_LIBRARY_DELETE, id),
+    startRecording: (config: AudioStartConfig): Promise<void> => ipcRenderer.invoke(AUDIO_LIBRARY_START_RECORDING, config),
+    getRecordingWaveform: (): Promise<AnalysisRecordingWaveform> => ipcRenderer.invoke(AUDIO_LIBRARY_GET_RECORDING_WAVEFORM),
+    stopRecording: (name: string): Promise<AudioLibraryRecordResult> => ipcRenderer.invoke(AUDIO_LIBRARY_STOP_RECORDING, name)
   },
   art: {
     exportPng: (request: PngExportRequest): Promise<PngExportResult> => ipcRenderer.invoke(ART_EXPORT_PNG, request),

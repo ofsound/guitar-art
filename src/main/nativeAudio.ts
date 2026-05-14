@@ -55,6 +55,7 @@ export class AudioEngineHost {
   private native: NativeAudioEngine | null;
   private mode: AudioMode = 'simulator';
   private running = false;
+  private libraryRecording = false;
   private startedAt = performance.now();
   private simulatorParams: SimulatorParams = {
     inputGain: DEFAULT_START_CONFIG.inputGain,
@@ -119,6 +120,17 @@ export class AudioEngineHost {
       return;
     }
 
+    if (config.mode === 'playback') {
+      this.native?.setMode('simulator');
+      this.latestStatus = {
+        running: true,
+        mode: 'playback',
+        nativeAvailable: Boolean(this.native),
+        message: 'Playback running.'
+      };
+      return;
+    }
+
     this.native?.setMode('simulator');
     this.latestStatus = {
       running: true,
@@ -145,7 +157,7 @@ export class AudioEngineHost {
     this.latestStatus = {
       ...this.latestStatus,
       mode,
-      message: mode === 'live' ? 'Live mode selected.' : 'Simulator mode selected.'
+      message: mode === 'live' ? 'Live mode selected.' : mode === 'playback' ? 'Playback mode selected.' : 'Simulator mode selected.'
     };
   }
 
@@ -157,6 +169,10 @@ export class AudioEngineHost {
   getLatestFeatures(): AudioFeatures {
     if (this.running && this.mode === 'live' && this.native) {
       return normalizeFeatures(this.native.getLatestFeatures());
+    }
+
+    if (this.mode === 'playback') {
+      return DEFAULT_FEATURES;
     }
 
     if (!this.running) {
@@ -186,6 +202,34 @@ export class AudioEngineHost {
       sampleRate: DEFAULT_START_CONFIG.sampleRate,
       samples: []
     };
+  }
+
+  startLibraryRecording(config: AudioStartConfig): void {
+    if (!this.native?.startAnalysisRecording) {
+      throw new Error('Native audio library recording is unavailable.');
+    }
+    this.libraryRecording = true;
+    this.native.startAnalysisRecording(config);
+    this.latestStatus = {
+      ...this.latestStatus,
+      message: 'Recording input to Playback library.'
+    };
+  }
+
+  getLibraryRecordingWaveform(): AnalysisRecordingWaveform {
+    if (!this.libraryRecording) {
+      return {
+        durationMs: 0,
+        totalSamples: 0,
+        waveform: []
+      };
+    }
+    return this.getAnalysisRecordingWaveform();
+  }
+
+  stopLibraryRecording(): RawAudioRecording {
+    this.libraryRecording = false;
+    return this.stopAnalysisRecording();
   }
 }
 

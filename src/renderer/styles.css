@@ -270,6 +270,57 @@ input[type='range'] {
   background: #0b1012;
 }
 
+.playback-panel {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid rgba(168, 247, 245, 0.16);
+  border-radius: 8px;
+  background: #0b1012;
+}
+
+.playback-panel label {
+  color: #b8c3c0;
+  font-size: 12px;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.playback-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 7px;
+}
+
+.library-meta {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: #aebbb8;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.library-meta span {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.library-recorder {
+  display: grid;
+  gap: 8px;
+}
+
+.library-recorder .waveform-strip {
+  height: 56px;
+}
+
 .analysis-panel-header {
   display: flex;
   align-items: baseline;

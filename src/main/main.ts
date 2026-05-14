@@ -1,13 +1,33 @@
 import { app, BrowserWindow, dialog, ipcMain, systemPreferences } from 'electron';
-import { writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import started from 'electron-squirrel-startup';
-import type { AnalysisRecordingWaveform, AudioMode, AudioParamsUpdate, AudioStartConfig, MediaExportRequest, MediaExportResult, PngExportRequest, PngExportResult, RawAudioRecording } from '../shared/audio';
+import type {
+  AnalysisRecordingWaveform,
+  AudioLibraryItem,
+  AudioLibraryRecordResult,
+  AudioMode,
+  AudioParamsUpdate,
+  AudioStartConfig,
+  MediaExportRequest,
+  MediaExportResult,
+  PngExportRequest,
+  PngExportResult,
+  RawAudioRecording
+} from '../shared/audio';
 import {
   ART_EXPORT_MEDIA,
   ART_EXPORT_PNG,
   AUDIO_GET_ANALYSIS_RECORDING_WAVEFORM,
   AUDIO_GET_LATEST_FEATURES,
+  AUDIO_LIBRARY_DELETE,
+  AUDIO_LIBRARY_GET_RECORDING_WAVEFORM,
+  AUDIO_LIBRARY_IMPORT,
+  AUDIO_LIBRARY_LIST,
+  AUDIO_LIBRARY_START_RECORDING,
+  AUDIO_LIBRARY_STOP_RECORDING,
   AUDIO_LIST_DEVICES,
   AUDIO_SET_PARAMS,
   AUDIO_SET_MODE,
@@ -29,6 +49,7 @@ if (started) {
 const audioHost = new AudioEngineHost();
 let mainWindow: BrowserWindow | null = null;
 let statusTimer: NodeJS.Timeout | null = null;
+let audioLibrary: AudioLibraryStore | null = null;
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -64,6 +85,8 @@ app.whenReady().then(async () => {
 
   registerAudioIpc();
   registerArtIpc();
+  audioLibrary = new AudioLibraryStore();
+  await audioLibrary.ready();
   await createWindow();
 
   app.on('activate', async () => {
@@ -115,6 +138,46 @@ function registerAudioIpc() {
   ipcMain.handle(AUDIO_GET_ANALYSIS_RECORDING_WAVEFORM, (): AnalysisRecordingWaveform => audioHost.getAnalysisRecordingWaveform());
 
   ipcMain.handle(AUDIO_STOP_ANALYSIS_RECORDING, (): RawAudioRecording => audioHost.stopAnalysisRecording());
+
+  ipcMain.handle(AUDIO_LIBRARY_LIST, async (): Promise<AudioLibraryItem[]> => {
+    return getAudioLibrary().list();
+  });
+
+  ipcMain.handle(AUDIO_LIBRARY_IMPORT, async (): Promise<AudioLibraryItem[]> => {
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, {
+          title: 'Import audio to Playback library',
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Audio files', extensions: ['mp3', 'wav', 'aif', 'aiff'] }]
+        })
+      : await dialog.showOpenDialog({
+          title: 'Import audio to Playback library',
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Audio files', extensions: ['mp3', 'wav', 'aif', 'aiff'] }]
+        });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return getAudioLibrary().list();
+    }
+
+    return getAudioLibrary().importFiles(result.filePaths);
+  });
+
+  ipcMain.handle(AUDIO_LIBRARY_DELETE, async (_event, id: string): Promise<void> => {
+    await getAudioLibrary().delete(id);
+  });
+
+  ipcMain.handle(AUDIO_LIBRARY_START_RECORDING, (_event, config: AudioStartConfig) => {
+    audioHost.startLibraryRecording({ ...config, mode: 'live', deviceId: undefined });
+  });
+
+  ipcMain.handle(AUDIO_LIBRARY_GET_RECORDING_WAVEFORM, (): AnalysisRecordingWaveform => audioHost.getLibraryRecordingWaveform());
+
+  ipcMain.handle(AUDIO_LIBRARY_STOP_RECORDING, async (_event, name: string): Promise<AudioLibraryRecordResult> => {
+    const recording = audioHost.stopLibraryRecording();
+    const item = await getAudioLibrary().addRecording(name, recording);
+    return { item, recording };
+  });
 }
 
 function registerArtIpc() {
@@ -175,4 +238,162 @@ function ensurePngExtension(filePath: string): string {
 
 function ensureExtension(filePath: string, extension: string): string {
   return path.extname(filePath).toLowerCase() === `.${extension}` ? filePath : `${filePath}.${extension}`;
+}
+
+function getAudioLibrary(): AudioLibraryStore {
+  if (!audioLibrary) {
+    audioLibrary = new AudioLibraryStore();
+  }
+  return audioLibrary;
+}
+
+class AudioLibraryStore {
+  private readonly dir = path.join(app.getPath('userData'), 'audio-library');
+  private readonly manifestPath = path.join(this.dir, 'library.json');
+  private items: AudioLibraryItem[] = [];
+  private readyPromise: Promise<void>;
+
+  constructor() {
+    this.readyPromise = this.load();
+  }
+
+  async ready(): Promise<void> {
+    await this.readyPromise;
+  }
+
+  async list(): Promise<AudioLibraryItem[]> {
+    await this.ready();
+    return this.items.map((item) => ({ ...item }));
+  }
+
+  async importFiles(filePaths: string[]): Promise<AudioLibraryItem[]> {
+    await this.ready();
+    for (const filePath of filePaths) {
+      const extension = normalizeAudioExtension(path.extname(filePath));
+      if (!extension) {
+        continue;
+      }
+      const id = randomUUID();
+      const fileName = `${id}.${extension}`;
+      const destination = path.join(this.dir, fileName);
+      await copyFile(filePath, destination);
+      const info = await stat(destination);
+      this.items.unshift({
+        id,
+        name: path.basename(filePath, path.extname(filePath)),
+        fileName,
+        extension,
+        fileUrl: pathToFileURL(destination).toString(),
+        sizeBytes: info.size,
+        createdAt: Date.now(),
+        source: 'import'
+      });
+    }
+    await this.save();
+    return this.list();
+  }
+
+  async addRecording(name: string, recording: RawAudioRecording): Promise<AudioLibraryItem> {
+    await this.ready();
+    const id = randomUUID();
+    const fileName = `${id}.wav`;
+    const filePath = path.join(this.dir, fileName);
+    await writeFile(filePath, encodePcmWav(recording.samples, recording.sampleRate));
+    const info = await stat(filePath);
+    const item: AudioLibraryItem = {
+      id,
+      name: sanitizeLibraryName(name) || `Input recording ${new Date().toLocaleString()}`,
+      fileName,
+      extension: 'wav',
+      fileUrl: pathToFileURL(filePath).toString(),
+      sizeBytes: info.size,
+      createdAt: Date.now(),
+      durationMs: Math.round((recording.samples.length / recording.sampleRate) * 1000),
+      source: 'recording'
+    };
+    this.items.unshift(item);
+    await this.save();
+    return { ...item };
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.ready();
+    const item = this.items.find((candidate) => candidate.id === id);
+    this.items = this.items.filter((candidate) => candidate.id !== id);
+    if (item) {
+      await unlink(path.join(this.dir, item.fileName)).catch(() => undefined);
+    }
+    await this.save();
+  }
+
+  private async load(): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    try {
+      const raw = JSON.parse(await readFile(this.manifestPath, 'utf8')) as unknown;
+      this.items = Array.isArray(raw) ? raw.map((item) => normalizeLibraryItem(item, this.dir)).filter((item): item is AudioLibraryItem => Boolean(item)) : [];
+    } catch {
+      this.items = [];
+      await this.save();
+    }
+  }
+
+  private async save(): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    await writeFile(this.manifestPath, JSON.stringify(this.items, null, 2));
+  }
+}
+
+function normalizeLibraryItem(value: unknown, dir: string): AudioLibraryItem | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const item = value as Partial<AudioLibraryItem>;
+  const extension = normalizeAudioExtension(item.extension ?? path.extname(item.fileName ?? ''));
+  if (!item.id || !item.fileName || !extension) {
+    return null;
+  }
+  return {
+    id: String(item.id),
+    name: sanitizeLibraryName(item.name) || path.basename(item.fileName, path.extname(item.fileName)),
+    fileName: String(item.fileName),
+    extension,
+    fileUrl: pathToFileURL(path.join(dir, String(item.fileName))).toString(),
+    sizeBytes: Math.max(0, Number(item.sizeBytes) || 0),
+    createdAt: Number(item.createdAt) || Date.now(),
+    durationMs: Number.isFinite(item.durationMs) ? Number(item.durationMs) : undefined,
+    source: item.source === 'recording' ? 'recording' : 'import'
+  };
+}
+
+function normalizeAudioExtension(extension: string | undefined): AudioLibraryItem['extension'] | null {
+  const value = (extension ?? '').replace(/^\./, '').toLowerCase();
+  return value === 'mp3' || value === 'wav' || value === 'aif' || value === 'aiff' ? value : null;
+}
+
+function sanitizeLibraryName(name: unknown): string {
+  return String(name ?? '').trim().replace(/[/:\\]/g, '-').slice(0, 80);
+}
+
+function encodePcmWav(samples: number[], sampleRate: number): Buffer {
+  const bytesPerSample = 2;
+  const dataBytes = samples.length * bytesPerSample;
+  const buffer = Buffer.alloc(44 + dataBytes);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + dataBytes, 4);
+  buffer.write('WAVE', 8);
+  buffer.write('fmt ', 12);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * bytesPerSample, 28);
+  buffer.writeUInt16LE(bytesPerSample, 32);
+  buffer.writeUInt16LE(bytesPerSample * 8, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(dataBytes, 40);
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, Number(samples[index]) || 0));
+    buffer.writeInt16LE(Math.round(sample * 32767), 44 + index * bytesPerSample);
+  }
+  return buffer;
 }

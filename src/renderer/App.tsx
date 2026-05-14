@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type {
   AudioDevice,
+  AudioLibraryItem,
   AudioMode,
   AudioStartConfig,
   AudioStatus,
@@ -13,7 +14,7 @@ import type {
   VisualLayerPreset
 } from '../shared/audio';
 import { DEFAULT_LAYER_CONTROLS, DEFAULT_START_CONFIG, DEFAULT_VISUAL_LAYERS } from '../shared/audio';
-import { getArtClient, getAudioClient } from './audioClient';
+import { getArtClient, getAudioClient, getLibraryClient } from './audioClient';
 import type { ActivityAnalysisReport, ActivityMetricResult } from './audioAnalysis';
 import { analyzeAudioRecording, createWaveformPreview } from './audioAnalysis';
 import { useAudioFeatures } from './useAudioFeatures';
@@ -63,7 +64,9 @@ const MODE_KIND: Record<VisualLayerMode, VisualLayerKind> = {
 
 const CONTROL_TOOLTIPS: Record<string, string> = {
   inputSource:
-    'Selects the upstream audio feature source. Live mode requests the native/CoreAudio input path and feeds the visual engine with measured DSP features from the selected interface channel. Simulator mode uses the renderer fallback feature stream. Visual effect: changes whether the art reacts to the guitar input or to synthetic motion, but it does not directly change a layer shader or drawing formula.',
+    'Selects the upstream audio feature source. Live mode requests the native/CoreAudio input path, Playback decodes an internal library file through Web Audio, and Simulator uses the renderer fallback feature stream. Visual effect: changes whether the art reacts to live input, a saved audio file, or synthetic motion.',
+  playbackLibrary:
+    'Manages the internal Playback library. Imported MP3, WAV, AIFF, and AIF files are copied into app storage, while recorded input is saved as WAV. Visual effect: the selected library item becomes the audio feature stream when Playback is active.',
   usbInput:
     'Chooses the physical audio device used before feature extraction. The selected device supplies the samples that become rms, peak, low, mid, high, spectralCentroid, pitch, chroma, guitar technique, voicing, and event features. Visual effect: different inputs can change every downstream visual because the entire DSP feature frame comes from this source.',
   channel:
@@ -586,6 +589,7 @@ type CaptureSettings = {
 type RailKey = 'input' | 'layers' | 'dsp';
 type MinimizedRails = Record<RailKey, boolean>;
 type SignalAnalysisState = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error';
+type LibraryRecordingState = 'idle' | 'recording' | 'saving' | 'error';
 
 const DEFAULT_CAPTURE_SETTINGS: CaptureSettings = {
   width: 1920,
@@ -611,6 +615,11 @@ export function App() {
   const [signalAnalysisWaveform, setSignalAnalysisWaveform] = useState<number[]>([]);
   const [signalAnalysisReport, setSignalAnalysisReport] = useState<ActivityAnalysisReport | null>(null);
   const [signalAnalysisModalOpen, setSignalAnalysisModalOpen] = useState(false);
+  const [libraryItems, setLibraryItems] = useState<AudioLibraryItem[]>([]);
+  const [libraryStatus, setLibraryStatus] = useState('Library ready');
+  const [libraryRecordingState, setLibraryRecordingState] = useState<LibraryRecordingState>('idle');
+  const [libraryRecordingWaveform, setLibraryRecordingWaveform] = useState<number[]>([]);
+  const [libraryRecordingName, setLibraryRecordingName] = useState('Input take');
   const [minimizedRails, setMinimizedRails] = useState<MinimizedRails>({
     input: false,
     layers: false,
@@ -628,11 +637,14 @@ export function App() {
   const visualSynthRef = useRef<VisualSynthHandle | null>(null);
   const viewportRef = useRef<HTMLElement | null>(null);
   const signalAnalysisPollRef = useRef<number | null>(null);
+  const libraryRecordingPollRef = useRef<number | null>(null);
   const audio = useMemo(() => getAudioClient(), []);
+  const library = useMemo(() => getLibraryClient(), []);
   const art = useMemo(() => getArtClient(), []);
 
   useEffect(() => {
     audio.listDevices().then(setDevices).catch(() => setDevices([]));
+    library.list().then(setLibraryItems).catch(() => setLibraryItems([]));
     const off = audio.onStatus(setStatus);
     audio.start(config).catch((error) => {
       setStatus((prev) => ({ ...prev, message: error instanceof Error ? error.message : 'Unable to start audio.' }));
@@ -640,11 +652,12 @@ export function App() {
     return () => {
       off();
     };
-  }, [audio]);
+  }, [audio, library]);
 
   useEffect(() => {
     return () => {
       stopSignalAnalysisPolling(signalAnalysisPollRef);
+      stopSignalAnalysisPolling(libraryRecordingPollRef);
     };
   }, []);
 
@@ -682,10 +695,14 @@ export function App() {
     () => devices.find((device) => device.id === config.deviceId),
     [devices, config.deviceId]
   );
+  const selectedLibraryItem = useMemo(
+    () => libraryItems.find((item) => item.id === config.playbackItemId) ?? libraryItems[0] ?? null,
+    [libraryItems, config.playbackItemId]
+  );
   const channelCount = selectedDevice?.inputChannels ?? 2;
 
   async function start(mode: AudioMode = config.mode) {
-    const next = { ...config, mode };
+    const next = { ...config, mode, playbackItemId: mode === 'playback' ? selectedLibraryItem?.id : config.playbackItemId };
     setConfig(next);
     try {
       await audio.start(next);
@@ -757,6 +774,93 @@ export function App() {
     } catch (error) {
       setSignalAnalysisState('error');
       setSignalAnalysisStatus(error instanceof Error ? error.message : 'Analysis failed');
+    }
+  }
+
+  async function refreshLibrary() {
+    try {
+      const items = await library.list();
+      setLibraryItems(items);
+      if (!config.playbackItemId && items[0]) {
+        setConfig((prev) => ({ ...prev, playbackItemId: items[0].id }));
+      }
+      setLibraryStatus(`${items.length} library item${items.length === 1 ? '' : 's'}`);
+    } catch (error) {
+      setLibraryStatus(error instanceof Error ? error.message : 'Unable to read Playback library');
+    }
+  }
+
+  async function importLibraryItems() {
+    try {
+      const items = await library.import();
+      setLibraryItems(items);
+      if (items[0]) {
+        updateStartConfig({ playbackItemId: items[0].id }, config.mode === 'playback');
+      }
+      setLibraryStatus(`${items.length} library item${items.length === 1 ? '' : 's'}`);
+    } catch (error) {
+      setLibraryStatus(error instanceof Error ? error.message : 'Unable to import audio');
+    }
+  }
+
+  async function deleteSelectedLibraryItem() {
+    if (!selectedLibraryItem) {
+      return;
+    }
+
+    try {
+      await library.delete(selectedLibraryItem.id);
+      const nextItems = await library.list();
+      setLibraryItems(nextItems);
+      updateStartConfig({ playbackItemId: nextItems[0]?.id }, config.mode === 'playback');
+      setLibraryStatus(`${selectedLibraryItem.name} deleted`);
+    } catch (error) {
+      setLibraryStatus(error instanceof Error ? error.message : 'Unable to delete library item');
+    }
+  }
+
+  async function startLibraryRecording() {
+    if (libraryRecordingPollRef.current || signalAnalysisState === 'recording') {
+      return;
+    }
+
+    try {
+      setLibraryRecordingWaveform([]);
+      setLibraryRecordingState('recording');
+      setLibraryStatus('Recording input to Playback library');
+      await library.startRecording({ ...config, mode: 'live', deviceId: undefined });
+      libraryRecordingPollRef.current = window.setInterval(() => {
+        void library.getRecordingWaveform().then((preview) => {
+          setLibraryRecordingWaveform(preview.waveform);
+          setLibraryStatus(`Recording ${formatDuration(preview.durationMs)} (${preview.totalSamples.toLocaleString()} samples)`);
+        }).catch(() => undefined);
+      }, 100);
+    } catch (error) {
+      stopSignalAnalysisPolling(libraryRecordingPollRef);
+      setLibraryRecordingState('error');
+      setLibraryStatus(error instanceof Error ? error.message : 'Unable to start library recording');
+    }
+  }
+
+  async function stopLibraryRecording() {
+    if (!libraryRecordingPollRef.current) {
+      return;
+    }
+
+    stopSignalAnalysisPolling(libraryRecordingPollRef);
+    setLibraryRecordingState('saving');
+    setLibraryStatus('Saving input recording');
+    try {
+      const result = await library.stopRecording(libraryRecordingName);
+      const items = await library.list();
+      setLibraryItems(items);
+      setLibraryRecordingWaveform(createWaveformPreview(Float32Array.from(result.recording.samples)));
+      setLibraryRecordingState('idle');
+      updateStartConfig({ playbackItemId: result.item.id }, config.mode === 'playback');
+      setLibraryStatus(`${result.item.name} saved to Playback`);
+    } catch (error) {
+      setLibraryRecordingState('error');
+      setLibraryStatus(error instanceof Error ? error.message : 'Unable to save recording');
     }
   }
 
@@ -952,7 +1056,7 @@ export function App() {
       <aside className={`control-rail ${minimizedRails.input ? 'rail-minimized' : ''}`}>
         <RailHeader
           kicker="Input"
-          title={minimizedRails.input ? undefined : status.mode === 'live' ? 'Live audio' : 'Simulator'}
+          title={minimizedRails.input ? undefined : status.mode === 'live' ? 'Live audio' : status.mode === 'playback' ? 'Playback' : 'Simulator'}
           minimized={minimizedRails.input}
           onToggle={() => toggleRail('input')}
         />
@@ -964,13 +1068,69 @@ export function App() {
           <label>
             <ControlLabel tooltip={CONTROL_TOOLTIPS.inputSource}>Input source</ControlLabel>
           </label>
-          <div className="segmented">
+          <div className="segmented three">
             <button className={config.mode === 'live' ? 'active' : ''} onClick={() => start('live')}>
               Live
+            </button>
+            <button className={config.mode === 'playback' ? 'active' : ''} onClick={() => start('playback')}>
+              Playback
             </button>
             <button className={config.mode === 'simulator' ? 'active' : ''} onClick={() => start('simulator')}>
               Simulator
             </button>
+          </div>
+        </section>
+
+        <section className="playback-panel">
+          <label>
+            <ControlLabel tooltip={CONTROL_TOOLTIPS.playbackLibrary}>Playback library</ControlLabel>
+          </label>
+          <select
+            value={selectedLibraryItem?.id ?? ''}
+            onChange={(event) => updateStartConfig({ playbackItemId: event.target.value || undefined }, config.mode === 'playback')}
+          >
+            <option value="">No library item</option>
+            {libraryItems.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          <div className="playback-actions">
+            <button type="button" onClick={importLibraryItems}>
+              Import
+            </button>
+            <button type="button" className="secondary" onClick={refreshLibrary}>
+              Refresh
+            </button>
+            <button type="button" className="secondary" onClick={deleteSelectedLibraryItem} disabled={!selectedLibraryItem}>
+              Delete
+            </button>
+          </div>
+          <div className="library-meta">
+            {selectedLibraryItem ? (
+              <>
+                <span>{selectedLibraryItem.extension.toUpperCase()}</span>
+                <span>{formatFileSize(selectedLibraryItem.sizeBytes)}</span>
+                <span>{selectedLibraryItem.source === 'recording' ? 'Recorded' : 'Imported'}</span>
+              </>
+            ) : (
+              <span>Import MP3, WAV, AIF, or AIFF</span>
+            )}
+          </div>
+          <div className="library-recorder">
+            <input value={libraryRecordingName} onInput={(event) => setLibraryRecordingName(event.currentTarget.value)} />
+            <WaveformStrip values={libraryRecordingWaveform} active={libraryRecordingState === 'recording'} />
+            <button
+              type="button"
+              onClick={libraryRecordingState === 'recording' ? stopLibraryRecording : startLibraryRecording}
+              disabled={libraryRecordingState === 'saving' || signalAnalysisState === 'recording'}
+            >
+              {libraryRecordingState === 'recording' ? 'Save Recording' : libraryRecordingState === 'saving' ? 'Saving' : 'Record Input'}
+            </button>
+          </div>
+          <div className={`analysis-state ${libraryRecordingState === 'recording' ? 'active' : ''} ${libraryRecordingState === 'error' ? 'warning' : ''}`}>
+            {libraryStatus}
           </div>
         </section>
 
@@ -1900,7 +2060,8 @@ function loadConfig(): AudioStartConfig {
   return {
     ...DEFAULT_START_CONFIG,
     ...stored,
-    mode: stored.mode === 'simulator' || stored.mode === 'live' ? stored.mode : DEFAULT_START_CONFIG.mode,
+    mode: stored.mode === 'simulator' || stored.mode === 'live' || stored.mode === 'playback' ? stored.mode : DEFAULT_START_CONFIG.mode,
+    playbackItemId: typeof stored.playbackItemId === 'string' ? stored.playbackItemId : undefined,
     channelIndex: typeof stored.channelIndex === 'number' ? Math.max(0, stored.channelIndex) : DEFAULT_START_CONFIG.channelIndex,
     bufferSize: stored.bufferSize === 128 || stored.bufferSize === 256 || stored.bufferSize === 512 ? stored.bufferSize : DEFAULT_START_CONFIG.bufferSize,
     sampleRate: 48000,
@@ -1989,6 +2150,13 @@ function formatDuration(durationMs: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.round(totalSeconds % 60);
   return minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${Math.round(totalSeconds)}s`;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatMetricValue(value: number): string {

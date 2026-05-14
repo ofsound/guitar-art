@@ -1,4 +1,4 @@
-export type AudioMode = 'live' | 'simulator';
+export type AudioMode = 'live' | 'simulator' | 'playback';
 
 export type AudioDevice = {
   id: string;
@@ -13,6 +13,7 @@ export type AudioDevice = {
 export type AudioStartConfig = {
   mode: AudioMode;
   deviceId?: string;
+  playbackItemId?: string;
   channelIndex: number;
   sampleRate: 48000;
   bufferSize: 128 | 256 | 512;
@@ -35,6 +36,25 @@ export type AnalysisRecordingWaveform = {
   durationMs: number;
   totalSamples: number;
   waveform: number[];
+};
+
+export type AudioLibraryItemSource = 'import' | 'recording';
+
+export type AudioLibraryItem = {
+  id: string;
+  name: string;
+  fileName: string;
+  extension: 'mp3' | 'wav' | 'aif' | 'aiff';
+  fileUrl: string;
+  sizeBytes: number;
+  createdAt: number;
+  durationMs?: number;
+  source: AudioLibraryItemSource;
+};
+
+export type AudioLibraryRecordResult = {
+  item: AudioLibraryItem;
+  recording: RawAudioRecording;
 };
 
 export type GuitarTechnique =
