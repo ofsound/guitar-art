@@ -2302,19 +2302,20 @@ function WaveformStrip({ values, active }: { values: number[]; active: boolean }
 
 function PlaybackWaveformOverview({ state }: { state: PlaybackTransportState }) {
   const progress = state.durationMs > 0 ? Math.max(0, Math.min(1, state.positionMs / state.durationMs)) : 0;
+  const progressStyle = { '--playback-progress': `${progress * 100}%` } as CSSProperties;
 
   return (
-    <div className="playback-overview" aria-label="Playback waveform overview">
+    <div className="playback-overview" style={progressStyle} aria-label="Playback waveform overview">
       {state.waveform.length ? (
-        <>
+        <div className="playback-overview-track">
           <div className="playback-overview-bars">
             {state.waveform.map((value, index) => (
               <span key={index} style={{ height: `${Math.max(4, Math.min(100, value * 100))}%` }} />
             ))}
           </div>
-          <div className="playback-overview-progress" style={{ width: `${progress * 100}%` }} />
-          <div className="playback-playhead" style={{ left: `${progress * 100}%` }} />
-        </>
+          <div className="playback-overview-progress" />
+          <div className="playback-playhead" />
+        </div>
       ) : (
         <em>No waveform loaded</em>
       )}

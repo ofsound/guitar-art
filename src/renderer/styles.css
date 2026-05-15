@@ -402,6 +402,8 @@ input[type='range'] {
 }
 
 .playback-overview {
+  --playback-progress: 0;
+  --playback-track-inset: 9px;
   position: relative;
   height: 86px;
   display: flex;
@@ -415,9 +417,14 @@ input[type='range'] {
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.045));
 }
 
+.playback-overview-track {
+  position: absolute;
+  inset: var(--playback-track-inset);
+}
+
 .playback-overview-bars {
   position: absolute;
-  inset: 9px;
+  inset: 0;
   z-index: 1;
   display: flex;
   align-items: center;
@@ -435,16 +442,19 @@ input[type='range'] {
   position: absolute;
   inset: 0 auto 0 0;
   z-index: 2;
+  width: var(--playback-progress);
   pointer-events: none;
   background: rgba(168, 247, 245, 0.12);
 }
 
 .playback-playhead {
   position: absolute;
-  top: 5px;
-  bottom: 5px;
+  top: 0;
+  bottom: 0;
+  left: var(--playback-progress);
   z-index: 3;
   width: 2px;
+  transform: translateX(-1px);
   pointer-events: none;
   background: #ffffff;
   box-shadow: 0 0 12px rgba(168, 247, 245, 0.62);
