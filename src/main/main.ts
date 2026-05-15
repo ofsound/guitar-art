@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, systemPreferences } from 'electron';
 import { copyFile, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -79,6 +79,11 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permission === 'midi');
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'midi');
+  });
+
   if (process.platform === 'darwin') {
     await systemPreferences.askForMediaAccess('microphone');
   }

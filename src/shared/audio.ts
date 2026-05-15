@@ -237,10 +237,38 @@ export type VisualLayer = {
   controls: VisualLayerControls;
 };
 
+export type MidiChannel = number | 'omni';
+
+export type MidiMappingSource = {
+  inputId: string;
+  inputName: string;
+  channel: MidiChannel;
+  cc: number;
+};
+
+export type MidiMappingTarget = {
+  layerId: string;
+  control: keyof VisualLayerControls;
+};
+
+export type MidiMappingRange = {
+  min: number;
+  max: number;
+  step: number;
+};
+
+export type MidiMapping = {
+  id: string;
+  source: MidiMappingSource;
+  target: MidiMappingTarget;
+  range: MidiMappingRange;
+};
+
 export type VisualLayerPreset = {
   id: string;
   name: string;
   layers: VisualLayer[];
+  midiMappings?: MidiMapping[];
   createdAt: number;
 };
 

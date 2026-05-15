@@ -11,6 +11,11 @@ import type {
   AudioMode,
   AudioStartConfig,
   AudioStatus,
+  MidiChannel,
+  MidiMapping,
+  MidiMappingRange,
+  MidiMappingSource,
+  MidiMappingTarget,
   VisualLayer,
   VisualLayerControls,
   VisualLayerKind,
@@ -35,6 +40,8 @@ const LAYER_STORAGE_KEY = 'guitar-art.visualLayers.v1';
 const PRESET_STORAGE_KEY = 'guitar-art.visualLayerPresets.v1';
 const CONFIG_STORAGE_KEY = 'guitar-art.startConfig.v1';
 const VISUAL_QUALITY_STORAGE_KEY = 'guitar-art.visualRenderQuality.v1';
+const MIDI_LEARN_TIMEOUT_MS = 12_000;
+const MIDI_SMOOTHING_AMOUNT = 0.35;
 const A4_HZ = 440;
 const A4_MIDI = 69;
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -625,6 +632,42 @@ type RailKey = 'input' | 'layers' | 'dsp';
 type MinimizedRails = Record<RailKey, boolean>;
 type SignalAnalysisState = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error';
 type LibraryRecordingState = 'idle' | 'recording' | 'saving' | 'error';
+type MidiAccessState = 'unsupported' | 'idle' | 'requesting' | 'ready' | 'denied';
+
+type MidiInputOption = {
+  id: string;
+  name: string;
+};
+
+type MidiLearnState = {
+  target: MidiMappingTarget;
+  label: string;
+  range: MidiMappingRange;
+  expiresAt: number;
+};
+
+type MidiConflictState = {
+  candidate: MidiMapping;
+  conflicts: MidiMapping[];
+};
+
+type MidiRuntimeState = {
+  pickupArmed: boolean;
+  pickupValue: number;
+  lastNormalizedValue: number | null;
+  lastCcValue: number | null;
+  smoothedValue: number | null;
+  targetValue: number | null;
+  lastAppliedValue: number | null;
+};
+
+type SliderMidiProps = {
+  mapping?: MidiMapping;
+  learning: boolean;
+  disabled: boolean;
+  onLearn: () => void;
+  onForget: () => void;
+};
 
 const DEFAULT_CAPTURE_SETTINGS: CaptureSettings = {
   width: 1920,
@@ -637,6 +680,7 @@ export function App() {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [config, setConfig] = useState<AudioStartConfig>(loadConfig);
   const [layers, setLayers] = useState<VisualLayer[]>(loadLayers);
+  const [midiMappings, setMidiMappings] = useState<MidiMapping[]>([]);
   const [presets, setPresets] = useState<VisualLayerPreset[]>(loadPresets);
   const [captureSettings, setCaptureSettings] = useState<CaptureSettings>(DEFAULT_CAPTURE_SETTINGS);
   const [presetName, setPresetName] = useState('New preset');
@@ -656,6 +700,16 @@ export function App() {
   const [libraryRecordingWaveform, setLibraryRecordingWaveform] = useState<number[]>([]);
   const [libraryRecordingName, setLibraryRecordingName] = useState('Input take');
   const [playbackState, setPlaybackState] = useState<PlaybackTransportState>(EMPTY_PLAYBACK_STATE);
+  const [midiAccessState, setMidiAccessState] = useState<MidiAccessState>(() =>
+    typeof navigator !== 'undefined' && typeof navigator.requestMIDIAccess === 'function' ? 'idle' : 'unsupported'
+  );
+  const [midiStatus, setMidiStatus] = useState('MIDI access has not been requested.');
+  const [midiInputs, setMidiInputs] = useState<MidiInputOption[]>([]);
+  const [selectedMidiInputId, setSelectedMidiInputId] = useState('');
+  const [selectedMidiChannel, setSelectedMidiChannel] = useState<MidiChannel>('omni');
+  const [midiLearn, setMidiLearn] = useState<MidiLearnState | null>(null);
+  const [midiLearnTick, setMidiLearnTick] = useState(Date.now());
+  const [midiConflict, setMidiConflict] = useState<MidiConflictState | null>(null);
   const [minimizedRails, setMinimizedRails] = useState<MinimizedRails>({
     input: false,
     layers: false,
@@ -674,6 +728,16 @@ export function App() {
   const viewportRef = useRef<HTMLElement | null>(null);
   const signalAnalysisPollRef = useRef<number | null>(null);
   const libraryRecordingPollRef = useRef<number | null>(null);
+  const layersRef = useRef(layers);
+  const midiMappingsRef = useRef(midiMappings);
+  const midiLearnRef = useRef<MidiLearnState | null>(null);
+  const midiConflictRef = useRef<MidiConflictState | null>(null);
+  const midiSelectionRef = useRef<{ inputId: string; channel: MidiChannel }>({ inputId: '', channel: 'omni' });
+  const midiAccessRef = useRef<MIDIAccess | null>(null);
+  const midiInputPortsRef = useRef<MIDIInput[]>([]);
+  const midiRuntimeRef = useRef(new Map<string, MidiRuntimeState>());
+  const midiRafRef = useRef<number | null>(null);
+  const handleMidiMessageRef = useRef<(input: MIDIInput, event: MIDIMessageEvent) => void>(() => undefined);
   const audio = useMemo(() => getAudioClient(), []);
   const playback = useMemo(() => getPlaybackClient(), []);
   const library = useMemo(() => getLibraryClient(), []);
@@ -688,6 +752,43 @@ export function App() {
       coordinateGetter: sortableKeyboardCoordinates
     })
   );
+
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
+
+  useEffect(() => {
+    midiMappingsRef.current = midiMappings;
+    const liveIds = new Set(midiMappings.map((mapping) => mapping.id));
+    Array.from(midiRuntimeRef.current.keys()).forEach((id) => {
+      if (!liveIds.has(id)) {
+        midiRuntimeRef.current.delete(id);
+      }
+    });
+  }, [midiMappings]);
+
+  useEffect(() => {
+    midiLearnRef.current = midiLearn;
+  }, [midiLearn]);
+
+  useEffect(() => {
+    midiConflictRef.current = midiConflict;
+  }, [midiConflict]);
+
+  useEffect(() => {
+    midiSelectionRef.current = { inputId: selectedMidiInputId, channel: selectedMidiChannel };
+  }, [selectedMidiInputId, selectedMidiChannel]);
+
+  useEffect(() => {
+    return () => {
+      if (midiRafRef.current !== null) {
+        window.cancelAnimationFrame(midiRafRef.current);
+      }
+      midiInputPortsRef.current.forEach((input) => {
+        input.onmidimessage = null;
+      });
+    };
+  }, []);
 
   useEffect(() => {
     audio.listDevices().then(setDevices).catch(() => setDevices([]));
@@ -736,8 +837,39 @@ export function App() {
   }, [visualQuality]);
 
   useEffect(() => {
+    if (!midiLearn) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setMidiLearnTick(now);
+      if (now >= midiLearn.expiresAt) {
+        setMidiLearn(null);
+        setMidiConflict(null);
+        setMidiStatus('MIDI learn timed out.');
+      }
+    }, 250);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [midiLearn]);
+
+  useEffect(() => {
+    handleMidiMessageRef.current = handleMidiMessage;
+  });
+
+  useEffect(() => {
     const exitOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || !visualFullscreen) {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      if (midiLearn) {
+        cancelMidiLearn('MIDI learn canceled.');
+        return;
+      }
+      if (!visualFullscreen) {
         return;
       }
       setVisualFullscreen(false);
@@ -747,7 +879,7 @@ export function App() {
     return () => {
       window.removeEventListener('keydown', exitOnEscape);
     };
-  }, [visualFullscreen]);
+  }, [midiLearn, visualFullscreen]);
 
   const selectedDevice = useMemo(
     () => devices.find((device) => device.id === config.deviceId),
@@ -758,6 +890,112 @@ export function App() {
     [libraryItems, config.playbackItemId]
   );
   const channelCount = selectedDevice?.inputChannels ?? 2;
+  const midiReady = midiAccessState === 'ready' && Boolean(selectedMidiInputId);
+  const midiLearnRemainingSeconds = midiLearn ? Math.max(0, Math.ceil((midiLearn.expiresAt - midiLearnTick) / 1000)) : 0;
+
+  async function requestMidiAccess() {
+    if (typeof navigator.requestMIDIAccess !== 'function') {
+      setMidiAccessState('unsupported');
+      setMidiStatus('Web MIDI is not available in this runtime.');
+      return;
+    }
+
+    setMidiAccessState('requesting');
+    setMidiStatus('Requesting MIDI access...');
+    try {
+      const access = await navigator.requestMIDIAccess({ sysex: false });
+      midiAccessRef.current = access;
+      setMidiAccessState('ready');
+      access.onstatechange = () => refreshMidiInputs(access);
+      refreshMidiInputs(access);
+    } catch (error) {
+      midiAccessRef.current = null;
+      setMidiAccessState('denied');
+      setMidiStatus(error instanceof Error ? error.message : 'MIDI access was denied.');
+    }
+  }
+
+  function refreshMidiInputs(access: MIDIAccess | null = midiAccessRef.current) {
+    if (!access) {
+      setMidiInputs([]);
+      setSelectedMidiInputId('');
+      return;
+    }
+
+    midiInputPortsRef.current.forEach((input) => {
+      input.onmidimessage = null;
+    });
+
+    const ports = Array.from(access.inputs.values()).filter((input) => input.state !== 'disconnected');
+    ports.forEach((input) => {
+      input.onmidimessage = (event) => handleMidiMessageRef.current(input, event);
+    });
+    midiInputPortsRef.current = ports;
+
+    const options = ports.map((input) => ({
+      id: input.id,
+      name: formatMidiInputName(input)
+    }));
+    setMidiInputs(options);
+    setSelectedMidiInputId((current) => {
+      if (options.some((option) => option.id === current)) {
+        return current;
+      }
+      return options[0]?.id ?? '';
+    });
+    setMidiStatus(options.length ? `${options.length} MIDI input${options.length === 1 ? '' : 's'} available.` : 'No MIDI inputs found.');
+  }
+
+  function handleMidiMessage(input: MIDIInput, event: MIDIMessageEvent) {
+    if (!event.data || event.data.length < 3) {
+      return;
+    }
+    const [statusByte, cc, value] = Array.from(event.data);
+    if (statusByte === undefined || cc === undefined || value === undefined) {
+      return;
+    }
+
+    const command = statusByte & 0xf0;
+    if (command !== 0xb0) {
+      return;
+    }
+
+    const channel = (statusByte & 0x0f) + 1;
+    const selection = midiSelectionRef.current;
+    if (input.id !== selection.inputId || !channelMatches(selection.channel, channel)) {
+      return;
+    }
+
+    const learn = midiLearnRef.current;
+    if (learn) {
+      if (midiConflictRef.current) {
+        return;
+      }
+      const candidate: MidiMapping = {
+        id: createId(),
+        source: {
+          inputId: input.id,
+          inputName: formatMidiInputName(input),
+          channel: selection.channel,
+          cc
+        },
+        target: learn.target,
+        range: learn.range
+      };
+      const conflicts = midiMappingsRef.current.filter(
+        (mapping) => !sameMidiTarget(mapping.target, candidate.target) && midiSourcesOverlap(mapping.source, candidate.source)
+      );
+      if (conflicts.length) {
+        setMidiConflict({ candidate, conflicts });
+        setMidiStatus(`CC ${cc} is already mapped. Confirm replace or cancel.`);
+        return;
+      }
+      completeMidiLearn(candidate, []);
+      return;
+    }
+
+    applyMidiCc(input.id, channel, cc, value);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1008,6 +1246,174 @@ export function App() {
     }));
   }
 
+  function updateLayerControlFromUi(id: string, key: keyof VisualLayerControls, value: number | boolean) {
+    rearmMidiMappingsForTarget({ layerId: id, control: key }, typeof value === 'number' ? value : null);
+    updateLayerControl(id, key, value);
+  }
+
+  function applyMidiLayerControl(id: string, key: keyof VisualLayerControls, value: number) {
+    setLayers((prev) =>
+      prev.map((layer) =>
+        layer.id === id
+          ? {
+              ...layer,
+              controls: syncDerivedLayerControls(layer.mode, {
+                ...layer.controls,
+                [key]: value
+              })
+            }
+          : layer
+      )
+    );
+  }
+
+  function startMidiLearn(target: MidiMappingTarget, label: string, range: MidiMappingRange) {
+    if (!midiReady) {
+      setMidiStatus(midiAccessState === 'ready' ? 'Choose a MIDI input before learning.' : 'Enable MIDI before learning a control.');
+      return;
+    }
+    setMidiConflict(null);
+    setMidiLearn({
+      target,
+      label,
+      range,
+      expiresAt: Date.now() + MIDI_LEARN_TIMEOUT_MS
+    });
+    setMidiLearnTick(Date.now());
+    setMidiStatus(`Learning ${label}. Move a CC control.`);
+  }
+
+  function cancelMidiLearn(message = 'MIDI learn canceled.') {
+    setMidiLearn(null);
+    setMidiConflict(null);
+    setMidiStatus(message);
+  }
+
+  function completeMidiLearn(candidate: MidiMapping, conflicts: MidiMapping[]) {
+    setMidiMappings((prev) => {
+      const conflictIds = new Set(conflicts.map((mapping) => mapping.id));
+      return [
+        ...prev.filter((mapping) => !sameMidiTarget(mapping.target, candidate.target) && !conflictIds.has(mapping.id)),
+        candidate
+      ];
+    });
+    armMidiMapping(candidate, getLayerControlValue(candidate.target));
+    setMidiLearn(null);
+    setMidiConflict(null);
+    setMidiStatus(`Mapped ${formatMidiSource(candidate.source)}.`);
+  }
+
+  function forgetMidiMapping(target: MidiMappingTarget) {
+    setMidiMappings((prev) => prev.filter((mapping) => !sameMidiTarget(mapping.target, target)));
+    setMidiStatus('MIDI mapping forgotten.');
+  }
+
+  function forgetAllMidiMappings() {
+    setMidiMappings([]);
+    setMidiStatus('All MIDI mappings forgotten.');
+  }
+
+  function applyMidiCc(inputId: string, channel: number, cc: number, ccValue: number) {
+    const normalized = ccValue / 127;
+    midiMappingsRef.current.forEach((mapping) => {
+      if (mapping.source.inputId !== inputId || mapping.source.cc !== cc || !channelMatches(mapping.source.channel, channel)) {
+        return;
+      }
+      const layerValue = getLayerControlValue(mapping.target);
+      if (layerValue === null) {
+        return;
+      }
+      const runtime = getMidiRuntime(mapping);
+      if (runtime.lastCcValue === ccValue && !runtime.pickupArmed) {
+        return;
+      }
+
+      if (runtime.pickupArmed) {
+        const pickedUp = midiPickupReached(runtime, mapping.range, normalized);
+        runtime.lastNormalizedValue = normalized;
+        runtime.lastCcValue = ccValue;
+        if (!pickedUp) {
+          return;
+        }
+        runtime.pickupArmed = false;
+        runtime.smoothedValue = layerValue;
+      }
+
+      runtime.lastNormalizedValue = normalized;
+      runtime.lastCcValue = ccValue;
+      runtime.targetValue = quantizeMidiValue(scaleMidiValue(normalized, mapping.range), mapping.range);
+    });
+    scheduleMidiFrame();
+  }
+
+  function scheduleMidiFrame() {
+    if (midiRafRef.current !== null) {
+      return;
+    }
+    midiRafRef.current = window.requestAnimationFrame(flushMidiFrame);
+  }
+
+  function flushMidiFrame() {
+    midiRafRef.current = null;
+    let hasPending = false;
+
+    midiMappingsRef.current.forEach((mapping) => {
+      const runtime = midiRuntimeRef.current.get(mapping.id);
+      if (!runtime || runtime.targetValue === null || runtime.pickupArmed) {
+        return;
+      }
+
+      const current = runtime.smoothedValue ?? getLayerControlValue(mapping.target) ?? runtime.targetValue;
+      const delta = runtime.targetValue - current;
+      const threshold = Math.max(mapping.range.step / 2, 0.000001);
+      const next = Math.abs(delta) <= threshold ? runtime.targetValue : current + delta * MIDI_SMOOTHING_AMOUNT;
+      const quantized = quantizeMidiValue(next, mapping.range);
+      runtime.smoothedValue = next;
+
+      if (runtime.lastAppliedValue !== quantized) {
+        runtime.lastAppliedValue = quantized;
+        applyMidiLayerControl(mapping.target.layerId, mapping.target.control, quantized);
+      }
+
+      if (Math.abs(runtime.targetValue - next) > threshold) {
+        hasPending = true;
+      } else {
+        runtime.smoothedValue = runtime.targetValue;
+      }
+    });
+
+    if (hasPending) {
+      midiRafRef.current = window.requestAnimationFrame(flushMidiFrame);
+    }
+  }
+
+  function getMidiRuntime(mapping: MidiMapping): MidiRuntimeState {
+    let runtime = midiRuntimeRef.current.get(mapping.id);
+    if (!runtime) {
+      runtime = createMidiRuntime(mapping, getLayerControlValue(mapping.target));
+      midiRuntimeRef.current.set(mapping.id, runtime);
+    }
+    return runtime;
+  }
+
+  function armMidiMapping(mapping: MidiMapping, currentValue: number | null) {
+    midiRuntimeRef.current.set(mapping.id, createMidiRuntime(mapping, currentValue));
+  }
+
+  function rearmMidiMappingsForTarget(target: MidiMappingTarget, currentValue: number | null) {
+    midiMappingsRef.current.forEach((mapping) => {
+      if (sameMidiTarget(mapping.target, target)) {
+        armMidiMapping(mapping, currentValue);
+      }
+    });
+  }
+
+  function getLayerControlValue(target: MidiMappingTarget): number | null {
+    const layer = layersRef.current.find((candidate) => candidate.id === target.layerId);
+    const value = layer?.controls[target.control];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
   function moveLayer(id: string, direction: -1 | 1) {
     setLayers((prev) => {
       const index = prev.findIndex((layer) => layer.id === id);
@@ -1044,6 +1450,7 @@ export function App() {
   function removeLayer(id: string) {
     setLayers((prev) => prev.filter((layer) => layer.id !== id));
     setMinimizedLayerIds((prev) => prev.filter((layerId) => layerId !== id));
+    setMidiMappings((prev) => prev.filter((mapping) => mapping.target.layerId !== id));
   }
 
   function savePreset() {
@@ -1052,6 +1459,7 @@ export function App() {
       id: createId(),
       name,
       layers: cloneLayers(layers),
+      midiMappings: cloneMidiMappings(midiMappings),
       createdAt: Date.now()
     };
     setPresets((prev) => [...prev, preset]);
@@ -1061,7 +1469,11 @@ export function App() {
   function loadPreset() {
     const preset = presets.find((item) => item.id === selectedPresetId);
     if (preset) {
-      setLayers(cloneLayers(preset.layers));
+      const nextLayers = cloneLayers(preset.layers);
+      const nextMappings = normalizeMidiMappings(preset.midiMappings, new Set(nextLayers.map((layer) => layer.id)));
+      setLayers(nextLayers);
+      setMidiMappings(nextMappings);
+      nextMappings.forEach((mapping) => armMidiMapping(mapping, getLayerControlValueFromLayers(nextLayers, mapping.target)));
       setMinimizedLayerIds([]);
       setPresetName(preset.name);
     }
@@ -1286,6 +1698,23 @@ export function App() {
           </button>
         </section>
 
+        <MidiLearnPanel
+          accessState={midiAccessState}
+          status={midiStatus}
+          inputs={midiInputs}
+          selectedInputId={selectedMidiInputId}
+          selectedChannel={selectedMidiChannel}
+          mappingCount={midiMappings.length}
+          learnLabel={midiLearn?.label ?? null}
+          learnRemainingSeconds={midiLearnRemainingSeconds}
+          onRequestAccess={requestMidiAccess}
+          onRefresh={() => refreshMidiInputs()}
+          onSelectInput={setSelectedMidiInputId}
+          onSelectChannel={setSelectedMidiChannel}
+          onCancelLearn={() => cancelMidiLearn()}
+          onForgetAll={forgetAllMidiMappings}
+        />
+
         <section className="control-group two-column">
           <label>
             <ControlLabel tooltip={CONTROL_TOOLTIPS.channel}>Channel</ControlLabel>
@@ -1415,8 +1844,13 @@ export function App() {
                   isFirst={index === 0}
                   isLast={index === layers.length - 1}
                   isMinimized={minimizedLayerIds.includes(layer.id)}
+                  midiMappings={midiMappings}
+                  midiLearnTarget={midiLearn?.target ?? null}
+                  midiDisabled={!midiReady}
                   onUpdate={updateLayer}
-                  onUpdateControl={updateLayerControl}
+                  onUpdateControl={updateLayerControlFromUi}
+                  onStartMidiLearn={startMidiLearn}
+                  onForgetMidiMapping={forgetMidiMapping}
                   onMove={moveLayer}
                   onRemove={removeLayer}
                   onToggleMinimized={toggleLayerCard}
@@ -1540,6 +1974,18 @@ export function App() {
       {signalAnalysisModalOpen && signalAnalysisReport ? (
         <ActivityReportModal report={signalAnalysisReport} onClose={() => setSignalAnalysisModalOpen(false)} />
       ) : null}
+      {midiConflict ? (
+        <MidiConflictModal
+          candidate={midiConflict.candidate}
+          conflicts={midiConflict.conflicts}
+          layers={layers}
+          onReplace={() => completeMidiLearn(midiConflict.candidate, midiConflict.conflicts)}
+          onCancel={() => {
+            setMidiConflict(null);
+            setMidiStatus('Move a different CC control or cancel learn.');
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1572,6 +2018,146 @@ function RailHeader({
         {minimized ? '+' : '-'}
       </button>
     </div>
+  );
+}
+
+function MidiLearnPanel({
+  accessState,
+  status,
+  inputs,
+  selectedInputId,
+  selectedChannel,
+  mappingCount,
+  learnLabel,
+  learnRemainingSeconds,
+  onRequestAccess,
+  onRefresh,
+  onSelectInput,
+  onSelectChannel,
+  onCancelLearn,
+  onForgetAll
+}: {
+  accessState: MidiAccessState;
+  status: string;
+  inputs: MidiInputOption[];
+  selectedInputId: string;
+  selectedChannel: MidiChannel;
+  mappingCount: number;
+  learnLabel: string | null;
+  learnRemainingSeconds: number;
+  onRequestAccess: () => void;
+  onRefresh: () => void;
+  onSelectInput: (inputId: string) => void;
+  onSelectChannel: (channel: MidiChannel) => void;
+  onCancelLearn: () => void;
+  onForgetAll: () => void;
+}) {
+  const ready = accessState === 'ready';
+  return (
+    <section className="midi-panel">
+      <div className="midi-panel-header">
+        <label>MIDI learn</label>
+        <span className={`midi-state ${ready ? 'ready' : accessState === 'denied' || accessState === 'unsupported' ? 'warning' : ''}`}>
+          {ready ? 'Ready' : accessState === 'requesting' ? 'Requesting' : accessState === 'unsupported' ? 'Unavailable' : 'Off'}
+        </span>
+      </div>
+      <div className="midi-actions">
+        <button type="button" onClick={onRequestAccess} disabled={accessState === 'requesting' || ready}>
+          {ready ? 'Enabled' : 'Enable'}
+        </button>
+        <button type="button" className="secondary" onClick={onRefresh} disabled={!ready}>
+          Refresh
+        </button>
+      </div>
+      <label>
+        <ControlLabel>MIDI input</ControlLabel>
+      </label>
+      <select value={selectedInputId} disabled={!ready || inputs.length === 0} onChange={(event) => onSelectInput(event.target.value)}>
+        <option value="">No MIDI input</option>
+        {inputs.map((input) => (
+          <option key={input.id} value={input.id}>
+            {input.name}
+          </option>
+        ))}
+      </select>
+      <label>
+        <ControlLabel>Channel</ControlLabel>
+      </label>
+      <select
+        value={selectedChannel}
+        disabled={!ready}
+        onChange={(event) => onSelectChannel(event.target.value === 'omni' ? 'omni' : Number(event.target.value))}
+      >
+        <option value="omni">Omni</option>
+        {Array.from({ length: 16 }, (_, index) => index + 1).map((channel) => (
+          <option key={channel} value={channel}>
+            Ch {channel}
+          </option>
+        ))}
+      </select>
+      <div className={`midi-learn-status ${learnLabel ? 'active' : ''}`}>
+        {learnLabel ? (
+          <>
+            <span>Learning {learnLabel}</span>
+            <strong>{learnRemainingSeconds}s</strong>
+          </>
+        ) : (
+          <span>{status}</span>
+        )}
+      </div>
+      {learnLabel ? (
+        <button type="button" className="secondary" onClick={onCancelLearn}>
+          Cancel learn
+        </button>
+      ) : null}
+      <button type="button" className="secondary" onClick={onForgetAll} disabled={mappingCount === 0}>
+        Forget all ({mappingCount})
+      </button>
+    </section>
+  );
+}
+
+function MidiConflictModal({
+  candidate,
+  conflicts,
+  layers,
+  onReplace,
+  onCancel
+}: {
+  candidate: MidiMapping;
+  conflicts: MidiMapping[];
+  layers: VisualLayer[];
+  onReplace: () => void;
+  onCancel: () => void;
+}) {
+  return createPortal(
+    <div className="analysis-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="midi-conflict-title">
+      <section className="midi-conflict-modal">
+        <header className="analysis-modal-header">
+          <div>
+            <span>MIDI learn conflict</span>
+            <h2 id="midi-conflict-title">Replace mapping?</h2>
+          </div>
+        </header>
+        <p>
+          {formatMidiSource(candidate.source)} is already mapped to{' '}
+          {conflicts.map((mapping) => formatMidiTarget(mapping.target, layers)).join(', ')}.
+        </p>
+        <div className="midi-conflict-target">
+          <span>New target</span>
+          <strong>{formatMidiTarget(candidate.target, layers)}</strong>
+        </div>
+        <div className="midi-conflict-actions">
+          <button type="button" onClick={onReplace}>
+            Replace
+          </button>
+          <button type="button" className="secondary" onClick={onCancel}>
+            Keep learning
+          </button>
+        </div>
+      </section>
+    </div>,
+    document.body
   );
 }
 
@@ -1737,8 +2323,13 @@ function LayerEditor({
   isFirst,
   isLast,
   isMinimized,
+  midiMappings,
+  midiLearnTarget,
+  midiDisabled,
   onUpdate,
   onUpdateControl,
+  onStartMidiLearn,
+  onForgetMidiMapping,
   onMove,
   onRemove,
   onToggleMinimized
@@ -1748,8 +2339,13 @@ function LayerEditor({
   isFirst: boolean;
   isLast: boolean;
   isMinimized: boolean;
+  midiMappings: MidiMapping[];
+  midiLearnTarget: MidiMappingTarget | null;
+  midiDisabled: boolean;
   onUpdate: (id: string, updater: (layer: VisualLayer) => VisualLayer) => void;
   onUpdateControl: (id: string, key: keyof VisualLayerControls, value: number | boolean) => void;
+  onStartMidiLearn: (target: MidiMappingTarget, label: string, range: MidiMappingRange) => void;
+  onForgetMidiMapping: (target: MidiMappingTarget) => void;
   onMove: (id: string, direction: -1 | 1) => void;
   onRemove: (id: string) => void;
   onToggleMinimized: (id: string) => void;
@@ -1761,6 +2357,16 @@ function LayerEditor({
     transition
   };
   const cardClassName = `layer-card ${layer.enabled ? '' : 'muted'} ${isDragging ? 'dragging' : ''}`;
+  const getMidiProps = (key: keyof VisualLayerControls, label: string, min: number, max: number, step: number): SliderMidiProps => {
+    const target = { layerId: layer.id, control: key };
+    return {
+      mapping: midiMappings.find((mapping) => sameMidiTarget(mapping.target, target)),
+      learning: midiLearnTarget ? sameMidiTarget(midiLearnTarget, target) : false,
+      disabled: midiDisabled,
+      onLearn: () => onStartMidiLearn(target, `${layer.name} ${label}`, { min, max, step }),
+      onForget: () => onForgetMidiMapping(target)
+    };
+  };
 
   if (isMinimized) {
     return (
@@ -1847,11 +2453,11 @@ function LayerEditor({
       </div>
 
       <LayerModeRoadmap layer={layer} />
-      <ModeSpecificControls layer={layer} onUpdateControl={onUpdateControl} />
-      <LayerSlider label="Input drive" tooltip={CONTROL_TOOLTIPS.sensitivity} value={layer.controls.sensitivity} min={0.1} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'sensitivity', value)} />
-      <LayerSlider label="Response" tooltip={CONTROL_TOOLTIPS.smoothing} value={layer.controls.smoothing} min={0} max={0.95} step={0.01} onChange={(value) => onUpdateControl(layer.id, 'smoothing', value)} />
-      <LayerSlider label="Layer gate" tooltip={CONTROL_TOOLTIPS.layerGateThreshold} value={layer.controls.gateThreshold} min={0} max={0.5} step={0.005} onChange={(value) => onUpdateControl(layer.id, 'gateThreshold', value)} />
-      <LayerSlider label="Opacity" tooltip={CONTROL_TOOLTIPS.opacity} value={layer.controls.opacity} min={0} max={1} step={0.01} onChange={(value) => onUpdateControl(layer.id, 'opacity', value)} />
+      <ModeSpecificControls layer={layer} onUpdateControl={onUpdateControl} getMidiProps={getMidiProps} />
+      <LayerSlider label="Input drive" tooltip={CONTROL_TOOLTIPS.sensitivity} value={layer.controls.sensitivity} min={0.1} max={3} step={0.05} midi={getMidiProps('sensitivity', 'Input drive', 0.1, 3, 0.05)} onChange={(value) => onUpdateControl(layer.id, 'sensitivity', value)} />
+      <LayerSlider label="Response" tooltip={CONTROL_TOOLTIPS.smoothing} value={layer.controls.smoothing} min={0} max={0.95} step={0.01} midi={getMidiProps('smoothing', 'Response', 0, 0.95, 0.01)} onChange={(value) => onUpdateControl(layer.id, 'smoothing', value)} />
+      <LayerSlider label="Layer gate" tooltip={CONTROL_TOOLTIPS.layerGateThreshold} value={layer.controls.gateThreshold} min={0} max={0.5} step={0.005} midi={getMidiProps('gateThreshold', 'Layer gate', 0, 0.5, 0.005)} onChange={(value) => onUpdateControl(layer.id, 'gateThreshold', value)} />
+      <LayerSlider label="Opacity" tooltip={CONTROL_TOOLTIPS.opacity} value={layer.controls.opacity} min={0} max={1} step={0.01} midi={getMidiProps('opacity', 'Opacity', 0, 1, 0.01)} onChange={(value) => onUpdateControl(layer.id, 'opacity', value)} />
 
       <label className="switch-row">
         <input
@@ -1916,21 +2522,35 @@ function RoadmapList({ title, items }: { title: string; items: string[] }) {
 
 function ModeSpecificControls({
   layer,
-  onUpdateControl
+  onUpdateControl,
+  getMidiProps
 }: {
   layer: VisualLayer;
   onUpdateControl: (id: string, key: keyof VisualLayerControls, value: number | boolean) => void;
+  getMidiProps: (key: keyof VisualLayerControls, label: string, min: number, max: number, step: number) => SliderMidiProps;
 }) {
   const control = (key: keyof VisualLayerControls, fallback: number) =>
     typeof layer.controls[key] === 'number' ? (layer.controls[key] as number) : fallback;
+  const slider = (key: keyof VisualLayerControls, label: string, tooltip: string | undefined, value: number, min: number, max: number, step: number) => (
+    <LayerSlider
+      label={label}
+      tooltip={tooltip}
+      value={value}
+      min={min}
+      max={max}
+      step={step}
+      midi={getMidiProps(key, label, min, max, step)}
+      onChange={(nextValue) => onUpdateControl(layer.id, key, nextValue)}
+    />
+  );
 
   if (layer.mode === 'trails2d') {
     return (
       <>
-        <LayerSlider label="Trail fade" tooltip={CONTROL_TOOLTIPS.trailFade} value={control('trailFade', 0.028)} min={0.006} max={0.08} step={0.001} onChange={(value) => onUpdateControl(layer.id, 'trailFade', value)} />
-        <LayerSlider label="Brush size" tooltip={CONTROL_TOOLTIPS.brushSize} value={control('brushSize', 1)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'brushSize', value)} />
-        <LayerSlider label="Drift speed" tooltip={CONTROL_TOOLTIPS.trailSpeed} value={control('trailSpeed', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'trailSpeed', value)} />
-        <LayerSlider label="Bloom" tooltip={CONTROL_TOOLTIPS.bloom} value={control('bloom', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'bloom', value)} />
+        {slider('trailFade', 'Trail fade', CONTROL_TOOLTIPS.trailFade, control('trailFade', 0.028), 0.006, 0.08, 0.001)}
+        {slider('brushSize', 'Brush size', CONTROL_TOOLTIPS.brushSize, control('brushSize', 1), 0.25, 3, 0.05)}
+        {slider('trailSpeed', 'Drift speed', CONTROL_TOOLTIPS.trailSpeed, control('trailSpeed', 1), 0, 3, 0.05)}
+        {slider('bloom', 'Bloom', CONTROL_TOOLTIPS.bloom, control('bloom', 1), 0, 3, 0.05)}
       </>
     );
   }
@@ -1938,10 +2558,10 @@ function ModeSpecificControls({
   if (layer.mode === 'lineArt2d') {
     return (
       <>
-        <LayerSlider label="Complexity" tooltip={CONTROL_TOOLTIPS.lineComplexity} value={control('lineComplexity', 1)} min={0.3} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'lineComplexity', value)} />
-        <LayerSlider label="Line weight" tooltip={CONTROL_TOOLTIPS.lineWeight} value={control('lineWeight', 1)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'lineWeight', value)} />
-        <LayerSlider label="Drift" tooltip={CONTROL_TOOLTIPS.lineDrift} value={control('lineDrift', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'lineDrift', value)} />
-        <LayerSlider label="Symmetry" tooltip={CONTROL_TOOLTIPS.symmetry} value={control('symmetry', 1)} min={0.5} max={4} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'symmetry', value)} />
+        {slider('lineComplexity', 'Complexity', CONTROL_TOOLTIPS.lineComplexity, control('lineComplexity', 1), 0.3, 3, 0.05)}
+        {slider('lineWeight', 'Line weight', CONTROL_TOOLTIPS.lineWeight, control('lineWeight', 1), 0.25, 3, 0.05)}
+        {slider('lineDrift', 'Drift', CONTROL_TOOLTIPS.lineDrift, control('lineDrift', 1), 0, 3, 0.05)}
+        {slider('symmetry', 'Symmetry', CONTROL_TOOLTIPS.symmetry, control('symmetry', 1), 0.5, 4, 0.05)}
       </>
     );
   }
@@ -1949,10 +2569,10 @@ function ModeSpecificControls({
   if (layer.mode === 'fretPulse2d') {
     return (
       <>
-        <LayerSlider label="Fret span" tooltip={CONTROL_TOOLTIPS.fretSpan2d} value={control('fretSpan', 12)} min={5} max={24} step={1} onChange={(value) => onUpdateControl(layer.id, 'fretSpan', value)} />
-        <LayerSlider label="String warp" tooltip={CONTROL_TOOLTIPS.stringWarp} value={control('stringWarp', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'stringWarp', value)} />
-        <LayerSlider label="Pulse decay" tooltip={CONTROL_TOOLTIPS.pulseDecay} value={control('pulseDecay', 1)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'pulseDecay', value)} />
-        <LayerSlider label="Marker size" tooltip={CONTROL_TOOLTIPS.markerSize} value={control('markerSize', 1)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'markerSize', value)} />
+        {slider('fretSpan', 'Fret span', CONTROL_TOOLTIPS.fretSpan2d, control('fretSpan', 12), 5, 24, 1)}
+        {slider('stringWarp', 'String warp', CONTROL_TOOLTIPS.stringWarp, control('stringWarp', 1), 0, 3, 0.05)}
+        {slider('pulseDecay', 'Pulse decay', CONTROL_TOOLTIPS.pulseDecay, control('pulseDecay', 1), 0.25, 3, 0.05)}
+        {slider('markerSize', 'Marker size', CONTROL_TOOLTIPS.markerSize, control('markerSize', 1), 0.25, 3, 0.05)}
       </>
     );
   }
@@ -1964,10 +2584,10 @@ function ModeSpecificControls({
   if (layer.mode === 'techniqueMap2d') {
     return (
       <>
-        <LayerSlider label="Scroll speed" tooltip={CONTROL_TOOLTIPS.scrollSpeed} value={control('scrollSpeed', 1)} min={0.2} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'scrollSpeed', value)} />
-        <LayerSlider label="Lane gain" tooltip={CONTROL_TOOLTIPS.laneGain} value={control('laneGain', 1)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'laneGain', value)} />
-        <LayerSlider label="History fade" tooltip={CONTROL_TOOLTIPS.historyFade} value={control('historyFade', 0.035)} min={0.006} max={0.12} step={0.001} onChange={(value) => onUpdateControl(layer.id, 'historyFade', value)} />
-        <LayerSlider label="Event accent" tooltip={CONTROL_TOOLTIPS.eventAccent} value={control('eventAccent', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'eventAccent', value)} />
+        {slider('scrollSpeed', 'Scroll speed', CONTROL_TOOLTIPS.scrollSpeed, control('scrollSpeed', 1), 0.2, 3, 0.05)}
+        {slider('laneGain', 'Lane gain', CONTROL_TOOLTIPS.laneGain, control('laneGain', 1), 0.25, 3, 0.05)}
+        {slider('historyFade', 'History fade', CONTROL_TOOLTIPS.historyFade, control('historyFade', 0.035), 0.006, 0.12, 0.001)}
+        {slider('eventAccent', 'Event accent', CONTROL_TOOLTIPS.eventAccent, control('eventAccent', 1), 0, 3, 0.05)}
       </>
     );
   }
@@ -1975,10 +2595,10 @@ function ModeSpecificControls({
   if (layer.mode === 'sideScroller2d') {
     return (
       <>
-        <LayerSlider label="Scroll speed" tooltip={CONTROL_TOOLTIPS.sideScrollSpeed} value={control('scrollSpeed', 1.25)} min={0.2} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'scrollSpeed', value)} />
-        <LayerSlider label="Activity gain" tooltip={CONTROL_TOOLTIPS.sidePitchGain} value={control('laneGain', 1.25)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'laneGain', value)} />
-        <LayerSlider label="History fade" tooltip={CONTROL_TOOLTIPS.sideHistoryFade} value={control('historyFade', 0.014)} min={0.001} max={0.08} step={0.001} onChange={(value) => onUpdateControl(layer.id, 'historyFade', value)} />
-        <LayerSlider label="Event accent" tooltip={CONTROL_TOOLTIPS.sideEventAccent} value={control('eventAccent', 1.4)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'eventAccent', value)} />
+        {slider('scrollSpeed', 'Scroll speed', CONTROL_TOOLTIPS.sideScrollSpeed, control('scrollSpeed', 1.25), 0.2, 3, 0.05)}
+        {slider('laneGain', 'Activity gain', CONTROL_TOOLTIPS.sidePitchGain, control('laneGain', 1.25), 0.25, 3, 0.05)}
+        {slider('historyFade', 'History fade', CONTROL_TOOLTIPS.sideHistoryFade, control('historyFade', 0.014), 0.001, 0.08, 0.001)}
+        {slider('eventAccent', 'Event accent', CONTROL_TOOLTIPS.sideEventAccent, control('eventAccent', 1.4), 0, 3, 0.05)}
       </>
     );
   }
@@ -1986,10 +2606,10 @@ function ModeSpecificControls({
   if (layer.mode === 'forms3d') {
     return (
       <>
-        <LayerSlider label="Form scale" tooltip={CONTROL_TOOLTIPS.formScale} value={control('formScale', 1)} min={0.3} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'formScale', value)} />
-        <LayerSlider label="Morph rate" tooltip={CONTROL_TOOLTIPS.morphRate} value={control('morphRate', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'morphRate', value)} />
-        <LayerSlider label="Spin" tooltip={CONTROL_TOOLTIPS.spinForms} value={control('spin', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'spin', value)} />
-        <LayerSlider label="Particle burst" tooltip={CONTROL_TOOLTIPS.particleBurst} value={control('particleBurst', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'particleBurst', value)} />
+        {slider('formScale', 'Form scale', CONTROL_TOOLTIPS.formScale, control('formScale', 1), 0.3, 3, 0.05)}
+        {slider('morphRate', 'Morph rate', CONTROL_TOOLTIPS.morphRate, control('morphRate', 1), 0, 3, 0.05)}
+        {slider('spin', 'Spin', CONTROL_TOOLTIPS.spinForms, control('spin', 1), 0, 3, 0.05)}
+        {slider('particleBurst', 'Particle burst', CONTROL_TOOLTIPS.particleBurst, control('particleBurst', 1), 0, 3, 0.05)}
       </>
     );
   }
@@ -1997,10 +2617,10 @@ function ModeSpecificControls({
   if (layer.mode === 'spectralField3d') {
     return (
       <>
-        <LayerSlider label="Field spread" tooltip={CONTROL_TOOLTIPS.fieldSpread} value={control('fieldSpread', 1)} min={0.3} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'fieldSpread', value)} />
-        <LayerSlider label="Orbit speed" tooltip={CONTROL_TOOLTIPS.orbitSpeedSpectral} value={control('orbitSpeed', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'orbitSpeed', value)} />
-        <LayerSlider label="Point size" tooltip={CONTROL_TOOLTIPS.pointSize} value={control('pointSize', 1)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'pointSize', value)} />
-        <LayerSlider label="Density" tooltip={CONTROL_TOOLTIPS.density} value={control('density', 1)} min={0.25} max={1} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'density', value)} />
+        {slider('fieldSpread', 'Field spread', CONTROL_TOOLTIPS.fieldSpread, control('fieldSpread', 1), 0.3, 3, 0.05)}
+        {slider('orbitSpeed', 'Orbit speed', CONTROL_TOOLTIPS.orbitSpeedSpectral, control('orbitSpeed', 1), 0, 3, 0.05)}
+        {slider('pointSize', 'Point size', CONTROL_TOOLTIPS.pointSize, control('pointSize', 1), 0.25, 3, 0.05)}
+        {slider('density', 'Density', CONTROL_TOOLTIPS.density, control('density', 1), 0.25, 1, 0.05)}
       </>
     );
   }
@@ -2008,10 +2628,10 @@ function ModeSpecificControls({
   if (layer.mode === 'chromaConstellation3d') {
     return (
       <>
-        <LayerSlider label="Node scale" tooltip={CONTROL_TOOLTIPS.nodeScale} value={control('nodeScale', 1)} min={0.3} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'nodeScale', value)} />
-        <LayerSlider label="Chord tension" tooltip={CONTROL_TOOLTIPS.chordTension} value={control('chordTension', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'chordTension', value)} />
-        <LayerSlider label="Orbit" tooltip={CONTROL_TOOLTIPS.orbitChroma} value={control('orbitSpeed', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'orbitSpeed', value)} />
-        <LayerSlider label="Particle bloom" tooltip={CONTROL_TOOLTIPS.particleBloom} value={control('particleBloom', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'particleBloom', value)} />
+        {slider('nodeScale', 'Node scale', CONTROL_TOOLTIPS.nodeScale, control('nodeScale', 1), 0.3, 3, 0.05)}
+        {slider('chordTension', 'Chord tension', CONTROL_TOOLTIPS.chordTension, control('chordTension', 1), 0, 3, 0.05)}
+        {slider('orbitSpeed', 'Orbit', CONTROL_TOOLTIPS.orbitChroma, control('orbitSpeed', 1), 0, 3, 0.05)}
+        {slider('particleBloom', 'Particle bloom', CONTROL_TOOLTIPS.particleBloom, control('particleBloom', 1), 0, 3, 0.05)}
       </>
     );
   }
@@ -2019,10 +2639,10 @@ function ModeSpecificControls({
   if (layer.mode === 'guitarGlyph3d') {
     return (
       <>
-        <LayerSlider label="Fretboard tilt" tooltip={CONTROL_TOOLTIPS.fretboardTilt} value={control('fretboardTilt', 1)} min={-2} max={2} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'fretboardTilt', value)} />
-        <LayerSlider label="Fret span" tooltip={CONTROL_TOOLTIPS.fretSpanGlyph} value={control('fretSpan', 12)} min={5} max={24} step={1} onChange={(value) => onUpdateControl(layer.id, 'fretSpan', value)} />
-        <LayerSlider label="Note glow" tooltip={CONTROL_TOOLTIPS.noteGlow} value={control('noteGlow', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'noteGlow', value)} />
-        <LayerSlider label="Spectrum height" tooltip={CONTROL_TOOLTIPS.spectrumHeight} value={control('spectrumHeight', 1)} min={0.2} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'spectrumHeight', value)} />
+        {slider('fretboardTilt', 'Fretboard tilt', CONTROL_TOOLTIPS.fretboardTilt, control('fretboardTilt', 1), -2, 2, 0.05)}
+        {slider('fretSpan', 'Fret span', CONTROL_TOOLTIPS.fretSpanGlyph, control('fretSpan', 12), 5, 24, 1)}
+        {slider('noteGlow', 'Note glow', CONTROL_TOOLTIPS.noteGlow, control('noteGlow', 1), 0, 3, 0.05)}
+        {slider('spectrumHeight', 'Spectrum height', CONTROL_TOOLTIPS.spectrumHeight, control('spectrumHeight', 1), 0.2, 3, 0.05)}
       </>
     );
   }
@@ -2030,20 +2650,20 @@ function ModeSpecificControls({
   if (layer.mode === 'stringResonator3d') {
     return (
       <>
-        <LayerSlider label="Strings" tooltip={CONTROL_TOOLTIPS.stringCount} value={control('stringCount', 6)} min={1} max={6} step={1} onChange={(value) => onUpdateControl(layer.id, 'stringCount', value)} />
-        <LayerSlider label="Decay" tooltip={CONTROL_TOOLTIPS.resonanceDecay} value={control('resonanceDecay', 1)} min={0.25} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'resonanceDecay', value)} />
-        <LayerSlider label="Wave depth" tooltip={CONTROL_TOOLTIPS.waveDepth} value={control('waveDepth', 1)} min={0.1} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'waveDepth', value)} />
-        <LayerSlider label="Bend sensitivity" tooltip={CONTROL_TOOLTIPS.bendSensitivity} value={control('bendSensitivity', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'bendSensitivity', value)} />
+        {slider('stringCount', 'Strings', CONTROL_TOOLTIPS.stringCount, control('stringCount', 6), 1, 6, 1)}
+        {slider('resonanceDecay', 'Decay', CONTROL_TOOLTIPS.resonanceDecay, control('resonanceDecay', 1), 0.25, 3, 0.05)}
+        {slider('waveDepth', 'Wave depth', CONTROL_TOOLTIPS.waveDepth, control('waveDepth', 1), 0.1, 3, 0.05)}
+        {slider('bendSensitivity', 'Bend sensitivity', CONTROL_TOOLTIPS.bendSensitivity, control('bendSensitivity', 1), 0, 3, 0.05)}
       </>
     );
   }
 
   return (
     <>
-      <LayerSlider label="Shard count" tooltip={CONTROL_TOOLTIPS.shardCount} value={control('shardCount', 1)} min={0.2} max={1} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'shardCount', value)} />
-      <LayerSlider label="Scatter" tooltip={CONTROL_TOOLTIPS.scatter} value={control('scatter', 1)} min={0.2} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'scatter', value)} />
-      <LayerSlider label="Spin" tooltip={CONTROL_TOOLTIPS.spinShard} value={control('spin', 1)} min={0} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'spin', value)} />
-      <LayerSlider label="Fracture" tooltip={CONTROL_TOOLTIPS.fracture} value={control('fracture', 1)} min={0.2} max={3} step={0.05} onChange={(value) => onUpdateControl(layer.id, 'fracture', value)} />
+      {slider('shardCount', 'Shard count', CONTROL_TOOLTIPS.shardCount, control('shardCount', 1), 0.2, 1, 0.05)}
+      {slider('scatter', 'Scatter', CONTROL_TOOLTIPS.scatter, control('scatter', 1), 0.2, 3, 0.05)}
+      {slider('spin', 'Spin', CONTROL_TOOLTIPS.spinShard, control('spin', 1), 0, 3, 0.05)}
+      {slider('fracture', 'Fracture', CONTROL_TOOLTIPS.fracture, control('fracture', 1), 0.2, 3, 0.05)}
     </>
   );
 }
@@ -2055,6 +2675,7 @@ function LayerSlider({
   min,
   max,
   step,
+  midi,
   onChange
 }: {
   label: string;
@@ -2063,6 +2684,7 @@ function LayerSlider({
   min: number;
   max: number;
   step: number;
+  midi?: SliderMidiProps;
   onChange: (value: number) => void;
 }) {
   return (
@@ -2072,6 +2694,21 @@ function LayerSlider({
           {label}
         </ControlLabel>
       </label>
+      {midi ? (
+        <div className="midi-slider-row">
+          <button type="button" className={midi.learning ? 'active' : 'secondary'} disabled={midi.disabled} onClick={midi.onLearn}>
+            {midi.learning ? 'Learning' : 'Learn'}
+          </button>
+          {midi.mapping ? (
+            <button type="button" className="secondary" onClick={midi.onForget}>
+              Forget
+            </button>
+          ) : null}
+          <span title={midi.mapping ? formatMidiSource(midi.mapping.source) : undefined}>
+            {midi.mapping ? formatMidiSource(midi.mapping.source) : 'No MIDI'}
+          </span>
+        </div>
+      ) : null}
       <input type="range" min={min} max={max} step={step} value={value} onInput={(event) => onChange(Number(event.currentTarget.value))} />
     </div>
   );
@@ -2226,6 +2863,144 @@ function syncDerivedLayerControls(mode: VisualLayerMode, controls: VisualLayerCo
   return next;
 }
 
+function createMidiRuntime(mapping: MidiMapping, currentValue: number | null): MidiRuntimeState {
+  return {
+    pickupArmed: true,
+    pickupValue: normalizeMidiControlValue(currentValue ?? mapping.range.min, mapping.range),
+    lastNormalizedValue: null,
+    lastCcValue: null,
+    smoothedValue: currentValue,
+    targetValue: null,
+    lastAppliedValue: currentValue
+  };
+}
+
+function midiPickupReached(runtime: MidiRuntimeState, range: MidiMappingRange, normalizedValue: number): boolean {
+  const tolerance = Math.max(0.004, (range.step / Math.max(0.000001, range.max - range.min)) * 0.5);
+  if (Math.abs(normalizedValue - runtime.pickupValue) <= tolerance) {
+    return true;
+  }
+  if (runtime.lastNormalizedValue === null) {
+    return false;
+  }
+  return (runtime.lastNormalizedValue - runtime.pickupValue) * (normalizedValue - runtime.pickupValue) <= 0;
+}
+
+function scaleMidiValue(normalizedValue: number, range: MidiMappingRange): number {
+  return range.min + Math.max(0, Math.min(1, normalizedValue)) * (range.max - range.min);
+}
+
+function normalizeMidiControlValue(value: number, range: MidiMappingRange): number {
+  return Math.max(0, Math.min(1, (value - range.min) / Math.max(0.000001, range.max - range.min)));
+}
+
+function quantizeMidiValue(value: number, range: MidiMappingRange): number {
+  const clamped = Math.max(range.min, Math.min(range.max, value));
+  if (range.step <= 0) {
+    return clamped;
+  }
+  const snapped = range.min + Math.round((clamped - range.min) / range.step) * range.step;
+  const decimals = getStepDecimals(range.step);
+  return Number(Math.max(range.min, Math.min(range.max, snapped)).toFixed(decimals));
+}
+
+function getStepDecimals(step: number): number {
+  const text = String(step);
+  const dotIndex = text.indexOf('.');
+  return dotIndex >= 0 ? text.length - dotIndex - 1 : 0;
+}
+
+function channelMatches(mappingChannel: MidiChannel, incomingChannel: number): boolean {
+  return mappingChannel === 'omni' || mappingChannel === incomingChannel;
+}
+
+function midiSourcesOverlap(left: MidiMappingSource, right: MidiMappingSource): boolean {
+  if (left.inputId !== right.inputId || left.cc !== right.cc) {
+    return false;
+  }
+  return left.channel === 'omni' || right.channel === 'omni' || left.channel === right.channel;
+}
+
+function sameMidiTarget(left: MidiMappingTarget, right: MidiMappingTarget): boolean {
+  return left.layerId === right.layerId && left.control === right.control;
+}
+
+function formatMidiSource(source: MidiMappingSource): string {
+  const channel = source.channel === 'omni' ? 'Omni' : `Ch ${source.channel}`;
+  return `${source.inputName}, ${channel}, CC ${source.cc}`;
+}
+
+function formatMidiInputName(input: MIDIInput): string {
+  return input.name || input.manufacturer || input.id || 'MIDI input';
+}
+
+function formatMidiTarget(target: MidiMappingTarget, layers: VisualLayer[]): string {
+  const layer = layers.find((candidate) => candidate.id === target.layerId);
+  return `${layer?.name ?? 'Missing layer'} ${formatControlKey(target.control)}`;
+}
+
+function formatControlKey(key: keyof VisualLayerControls): string {
+  return String(key)
+    .replace(/([A-Z])/g, ' $1')
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function cloneMidiMappings(mappings: MidiMapping[]): MidiMapping[] {
+  return mappings.map((mapping) => ({
+    ...mapping,
+    source: { ...mapping.source },
+    target: { ...mapping.target },
+    range: { ...mapping.range }
+  }));
+}
+
+function normalizeMidiMappings(mappings: MidiMapping[] | undefined, layerIds: Set<string>): MidiMapping[] {
+  if (!Array.isArray(mappings)) {
+    return [];
+  }
+  return mappings
+    .map((mapping) => normalizeMidiMapping(mapping, layerIds))
+    .filter(Boolean) as MidiMapping[];
+}
+
+function normalizeMidiMapping(mapping: MidiMapping, layerIds: Set<string>): MidiMapping | null {
+  if (!mapping || !mapping.source || !mapping.target || !mapping.range || !layerIds.has(mapping.target.layerId)) {
+    return null;
+  }
+  const channel = mapping.source.channel === 'omni' ? 'omni' : clampInteger(mapping.source.channel, 1, 16, 1);
+  const cc = clampInteger(mapping.source.cc, 0, 127, 0);
+  const min = Number(mapping.range.min);
+  const max = Number(mapping.range.max);
+  const step = Number(mapping.range.step);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(step) || max <= min || step <= 0) {
+    return null;
+  }
+  return {
+    id: typeof mapping.id === 'string' ? mapping.id : createId(),
+    source: {
+      inputId: typeof mapping.source.inputId === 'string' ? mapping.source.inputId : '',
+      inputName: typeof mapping.source.inputName === 'string' ? mapping.source.inputName : 'MIDI input',
+      channel,
+      cc
+    },
+    target: {
+      layerId: mapping.target.layerId,
+      control: mapping.target.control
+    },
+    range: { min, max, step }
+  };
+}
+
+function getLayerControlValueFromLayers(layers: VisualLayer[], target: MidiMappingTarget): number | null {
+  const layer = layers.find((candidate) => candidate.id === target.layerId);
+  const value = layer?.controls[target.control];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(min, Math.min(max, Math.round(value))) : fallback;
+}
+
 function loadLayers(): VisualLayer[] {
   const stored = readJson<VisualLayer[]>(LAYER_STORAGE_KEY);
   if (!Array.isArray(stored)) {
@@ -2264,12 +3039,16 @@ function loadPresets(): VisualLayerPreset[] {
     return [];
   }
   return stored
-    .map((preset) => ({
-      id: typeof preset.id === 'string' ? preset.id : createId(),
-      name: typeof preset.name === 'string' ? preset.name : 'Preset',
-      layers: Array.isArray(preset.layers) ? (preset.layers.map(normalizeLayer).filter(Boolean) as VisualLayer[]) : [],
-      createdAt: typeof preset.createdAt === 'number' ? preset.createdAt : Date.now()
-    }))
+    .map((preset) => {
+      const layers = Array.isArray(preset.layers) ? (preset.layers.map(normalizeLayer).filter(Boolean) as VisualLayer[]) : [];
+      return {
+        id: typeof preset.id === 'string' ? preset.id : createId(),
+        name: typeof preset.name === 'string' ? preset.name : 'Preset',
+        layers,
+        midiMappings: normalizeMidiMappings(preset.midiMappings, new Set(layers.map((layer) => layer.id))),
+        createdAt: typeof preset.createdAt === 'number' ? preset.createdAt : Date.now()
+      };
+    })
     .filter((preset) => preset.layers.length > 0);
 }
 
