@@ -72,6 +72,9 @@ type TwoDLayerContext = BaseLayerContext & {
   trailY: number;
   seed: number;
   raindrops: Map<number, Raindrop>;
+  raindropLocalEventId: number;
+  raindropLastTriggerAt: number;
+  raindropPreviousTransient: number;
   historyPrimed?: boolean;
 };
 
@@ -608,6 +611,9 @@ function create2DLayerContext(
     trailY: 0.5,
     seed: Math.random() * 1000,
     raindrops: new Map(),
+    raindropLocalEventId: -1,
+    raindropLastTriggerAt: -10,
+    raindropPreviousTransient: 0,
     smoothed: createEmptyFrame(),
     dispose: () => {
       if (canvas.parentElement === twoDHost) {
@@ -1395,24 +1401,33 @@ function drawFretPulse(layerContext: TwoDLayerContext, layer: VisualLayer, frame
 
 function drawRaindrops(layerContext: TwoDLayerContext, layer: VisualLayer, frame: LayerFrame, features: AudioFeatures) {
   const { context, canvas, raindrops } = layerContext;
-  const events = Array.isArray(features.guitarEvents) ? features.guitarEvents : [];
   const lifetime = 1.25;
+  const pluckSensitivity = Math.max(0, layer.controls.pluckSensitivity ?? 1);
+  const pluckSeparation = Math.max(0, layer.controls.pluckSeparation ?? 0.055);
+  const transient = clamp01(Math.max(features.onset, features.spectralFlux, features.attack * 0.85));
+  const active = features.rms >= layer.controls.gateThreshold;
 
   context.globalCompositeOperation = 'source-over';
   context.fillStyle = `rgba(0, 0, 0, ${frame.gateOpen ? 0.045 : 0.075})`;
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  events.forEach((event) => {
-    if ((event.type !== 'pluck' && event.type !== 'note_on') || raindrops.has(event.id)) {
-      return;
+  if (pluckSensitivity > 0 && active) {
+    const threshold = Math.max(0.07, 0.32 / (0.7 + pluckSensitivity * 0.65));
+    const riseThreshold = Math.max(0.015, threshold * 0.22);
+    const transientRise = transient - layerContext.raindropPreviousTransient;
+    const retriggerGap = Math.max(0.065, pluckSeparation);
+    if (transient >= threshold && transientRise >= riseThreshold && features.t - layerContext.raindropLastTriggerAt > retriggerGap) {
+      const id = layerContext.raindropLocalEventId--;
+      raindrops.set(id, {
+        x: 0.08 + Math.random() * 0.84,
+        y: 0.08 + Math.random() * 0.84,
+        strength: clamp01(transient * (0.85 + pluckSensitivity * 0.18) + frame.rms * 0.3),
+        createdAt: features.t
+      });
+      layerContext.raindropLastTriggerAt = features.t;
     }
-    raindrops.set(event.id, {
-      x: 0.08 + Math.random() * 0.84,
-      y: 0.08 + Math.random() * 0.84,
-      strength: clamp01(Math.max(event.strength, frame.rms)),
-      createdAt: event.t
-    });
-  });
+  }
+  layerContext.raindropPreviousTransient = transient;
 
   context.globalCompositeOperation = 'lighter';
   context.lineCap = 'round';

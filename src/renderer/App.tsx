@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  AudioBufferSize,
   AudioDevice,
   AudioLibraryItem,
   AudioMode,
@@ -22,7 +23,7 @@ import type {
   VisualLayerMode,
   VisualLayerPreset
 } from '../shared/audio';
-import { DEFAULT_LAYER_CONTROLS, DEFAULT_START_CONFIG, DEFAULT_VISUAL_LAYERS } from '../shared/audio';
+import { BUFFER_SIZE_OPTIONS, DEFAULT_LAYER_CONTROLS, DEFAULT_START_CONFIG, DEFAULT_VISUAL_LAYERS } from '../shared/audio';
 import { getArtClient, getAudioClient, getLibraryClient, getPlaybackClient } from './audioClient';
 import type { PlaybackTransportState } from './playbackFeatureEngine';
 import type { ActivityAnalysisReport, ActivityMetricResult } from './audioAnalysis';
@@ -95,7 +96,7 @@ const CONTROL_TOOLTIPS: Record<string, string> = {
   channel:
     'Chooses which device channel is analyzed by the native audio engine. A fixed input index analyzes that channel only; Auto loudest lets the input picker favor the channel with the strongest signal. Visual effect: determines which guitar signal drives the feature frame, so a quiet or wrong channel will reduce gate activity, pitch confidence, chroma, events, and all layer motion.',
   buffer:
-    'Sets the native input buffer size before DSP analysis. Smaller buffers lower monitoring and visual latency, while larger buffers are more tolerant of CPU spikes. Visual effect: this does not change the feature math directly, but it changes how quickly rms, onset, spectral flux, pitch, and guitar events arrive at the renderer.',
+    'Sets the native input buffer size before DSP analysis. Smaller buffers lower monitoring and visual latency, while larger buffers are more tolerant of CPU spikes and unsupported hardware settings. Visual effect: this does not change the feature math directly, but it changes how quickly rms, onset, spectral flux, pitch, and guitar events arrive at the renderer.',
   inputGain:
     'Applies pre-analysis gain to the incoming audio stream. The native engine scales the signal before computing rms, peak, band energies, spectral features, pitch confidence, gate state, clipping, guitar events, and technique estimates. Visual effect: higher gain makes layers react sooner and more strongly, but too much gain can clip and overdrive onset, brightness, and event strength.',
   gateThreshold:
@@ -118,6 +119,10 @@ const CONTROL_TOOLTIPS: Record<string, string> = {
     'Toggles whether the layer participates in rendering. The DSP feature stream still exists, but this layer stops consuming it when disabled. Visual effect: hides or restores the layer without changing its saved controls.',
   sensitivity:
     'Multiplies incoming DSP features for this layer inside getLayerFrame: rms, peak, low, mid, high, spectralFlux, brightness, noisiness, attack, vibratoDepth, vibratoRate, and onset are scaled by sensitivity and gateMultiplier; spectralCentroid is scaled by 0.6 + sensitivity * 0.4. Visual effect: raises or lowers how strongly this layer responds to the same guitar performance.',
+  pluckSensitivity:
+    '2D Raindrops. Controls the layer-local transient detector that spawns ripples from onset, spectral flux, and attack. Higher values lower the local onset threshold without changing the native global guitar event detector.',
+  pluckSeparation:
+    '2D Raindrops. Sets the minimum time between spawned ripples. Turn it up to merge near-simultaneous pluck/transient triggers and discourage double-triggered drops from one physical pluck.',
   smoothing:
     'Sets the one-pole smoothing amount for this layer frame. Each smoothed feature moves toward the target by 1 - smoothing, including rms, peak, low, mid, high, spectralCentroid, spectralFlux, brightness, noisiness, attack, vibratoDepth, vibratoRate, onset, noteStability, and hue. Visual effect: low values feel immediate and twitchy; high values create slower, more fluid visual inertia.',
   layerGateThreshold:
@@ -395,15 +400,17 @@ const MODE_ROADMAPS: Record<VisualLayerMode, ModeRoadmap> = {
   raindrops2d: {
     description: 'A minimal black-and-white 2D ripple field where each detected pluck creates a random expanding ring animation.',
     dspMappings: [
-      'features.guitarEvents[] supplies pluck and note_on events.',
-      'Each new event id is assigned one random x/y point on the canvas.',
-      'event.strength and frame.rms are represented in the ring size, line weight, and fade.',
+      'The layer-local transient detector spawns ripples from onset, spectral flux, and attack.',
+      'Each accepted transient is assigned one random x/y point on the canvas.',
+      'Transient strength and frame.rms are represented in the ring size, line weight, and fade.',
       'Event age expands the rings and fades them out over a short fixed lifetime.'
     ],
     controlMappings: [
       'controls.sensitivity affects event strength through the shared frame calculation.',
+      'controls.pluckSensitivity lowers the local transient threshold for pluck ripples.',
+      'controls.pluckSeparation sets the minimum time between spawned ripples.',
       'controls.opacity sets the whole layer opacity.',
-      'No dedicated raindrop controls are exposed yet.'
+      'controls.scaleAmount sets the maximum ripple radius.'
     ],
     visualMappings: [
       'Each pluck becomes a distinct white ripple at a random point.',
@@ -1721,12 +1728,14 @@ export function App() {
           <select
             value={config.bufferSize}
             onChange={(event) =>
-              updateStartConfig({ bufferSize: Number(event.target.value) as 128 | 256 | 512 }, true)
+              updateStartConfig({ bufferSize: Number(event.target.value) as AudioBufferSize }, true)
             }
           >
-            <option value={128}>128</option>
-            <option value={256}>256</option>
-            <option value={512}>512</option>
+            {BUFFER_SIZE_OPTIONS.map((bufferSize) => (
+              <option key={bufferSize} value={bufferSize}>
+                {bufferSize}
+              </option>
+            ))}
           </select>
         </section>
 
@@ -2603,7 +2612,12 @@ function ModeSpecificControls({
   }
 
   if (layer.mode === 'raindrops2d') {
-    return null;
+    return (
+      <>
+        {slider('pluckSensitivity', 'Pluck sensitivity', CONTROL_TOOLTIPS.pluckSensitivity, control('pluckSensitivity', 1), 0, 3, 0.05)}
+        {slider('pluckSeparation', 'Pluck separation', CONTROL_TOOLTIPS.pluckSeparation, control('pluckSeparation', 0.055), 0, 0.2, 0.005)}
+      </>
+    );
   }
 
   if (layer.mode === 'techniqueMap2d') {
@@ -2822,6 +2836,7 @@ function createModeControls(mode: VisualLayerMode, current: Partial<VisualLayerC
     trails2d: { trailFade: 0.018, trailSpeed: 1.35, brushSize: 1.1, bloom: 1.25 },
     lineArt2d: { lineComplexity: 1.2, lineWeight: 1, lineDrift: 0.85, symmetry: 1.6 },
     fretPulse2d: { fretSpan: 12, stringWarp: 1.25, pulseDecay: 1.1, markerSize: 1.05, requiresGate: true },
+    raindrops2d: { pluckSensitivity: 1, pluckSeparation: 0.055, scaleAmount: 1 },
     techniqueMap2d: { scrollSpeed: 1.1, laneGain: 1.15, historyFade: 0.035, eventAccent: 1.25 },
     sideScroller2d: { scrollSpeed: 1.25, laneGain: 1.25, historyFade: 0.014, eventAccent: 1.4 },
     forms3d: { formScale: 1.1, morphRate: 1.15, spin: 0.9, particleBurst: 1.2, requiresGate: true },
@@ -3053,7 +3068,7 @@ function loadConfig(): AudioStartConfig {
     mode: stored.mode === 'playback' ? 'playback' : DEFAULT_START_CONFIG.mode,
     playbackItemId: typeof stored.playbackItemId === 'string' ? stored.playbackItemId : undefined,
     channelIndex: typeof stored.channelIndex === 'number' ? Math.max(0, stored.channelIndex) : DEFAULT_START_CONFIG.channelIndex,
-    bufferSize: stored.bufferSize === 128 || stored.bufferSize === 256 || stored.bufferSize === 512 ? stored.bufferSize : DEFAULT_START_CONFIG.bufferSize,
+    bufferSize: BUFFER_SIZE_OPTIONS.includes(stored.bufferSize as AudioBufferSize) ? (stored.bufferSize as AudioBufferSize) : DEFAULT_START_CONFIG.bufferSize,
     sampleRate: 48000,
     inputGain: clampNumber(stored.inputGain, INPUT_GAIN_MIN, INPUT_GAIN_MAX, DEFAULT_START_CONFIG.inputGain),
     gateThreshold: clampNumber(stored.gateThreshold, GATE_THRESHOLD_MIN, GATE_THRESHOLD_MAX, DEFAULT_START_CONFIG.gateThreshold)

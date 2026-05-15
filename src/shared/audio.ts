@@ -1,5 +1,9 @@
 export type AudioMode = 'live' | 'playback';
 
+export type AudioBufferSize = 32 | 64 | 128 | 256 | 512;
+
+export const BUFFER_SIZE_OPTIONS: AudioBufferSize[] = [32, 64, 128, 256, 512];
+
 export type AudioDevice = {
   id: string;
   name: string;
@@ -16,7 +20,7 @@ export type AudioStartConfig = {
   playbackItemId?: string;
   channelIndex: number;
   sampleRate: 48000;
-  bufferSize: 128 | 256 | 512;
+  bufferSize: AudioBufferSize;
   featureRateHz: number;
   inputGain: number;
   gateThreshold: number;
@@ -201,6 +205,8 @@ export type VisualLayerControls = {
   stringWarp?: number;
   pulseDecay?: number;
   markerSize?: number;
+  pluckSensitivity?: number;
+  pluckSeparation?: number;
   scrollSpeed?: number;
   laneGain?: number;
   historyFade?: number;
@@ -370,6 +376,8 @@ export const DEFAULT_LAYER_CONTROLS: VisualLayerControls = {
   stringWarp: 1,
   pulseDecay: 1,
   markerSize: 1,
+  pluckSensitivity: 1,
+  pluckSeparation: 0.055,
   scrollSpeed: 1,
   laneGain: 1,
   historyFade: 0.035,

@@ -146,6 +146,10 @@ try {
   const sideScrollerOptionCount = await page.locator('select option[value="sideScroller2d"]').count();
   const stringResonatorOptionCount = await page.locator('select option[value="stringResonator3d"]').count();
   const techniqueShardOptionCount = await page.locator('select option[value="techniqueShard3d"]').count();
+  const buffer32OptionCount = await page.locator('select option[value="32"]').count();
+  const buffer64OptionCount = await page.locator('select option[value="64"]').count();
+  const pluckSensitivityControlCount = await page.getByText('Pluck sensitivity').count();
+  const pluckSeparationControlCount = await page.getByText('Pluck separation').count();
   const desktopPixelStats = await getCanvasPixelStats(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(350);
@@ -174,11 +178,20 @@ try {
       `Unexpected new mode controls: fretPulse=${fretPulseOptionCount} raindrops=${raindropsOptionCount} techniqueMap=${techniqueMapOptionCount} sideScroller=${sideScrollerOptionCount} stringResonator=${stringResonatorOptionCount} techniqueShard=${techniqueShardOptionCount}`
     );
   }
+  if (buffer32OptionCount < 1 || buffer64OptionCount < 1) {
+    throw new Error(`Missing low-latency buffer options: 32=${buffer32OptionCount} 64=${buffer64OptionCount}`);
+  }
+  if (pluckSensitivityControlCount < 1) {
+    throw new Error(`Missing raindrops pluck sensitivity control: count=${pluckSensitivityControlCount}`);
+  }
+  if (pluckSeparationControlCount < 1) {
+    throw new Error(`Missing raindrops pluck separation control: count=${pluckSeparationControlCount}`);
+  }
   if (desktopPixelStats.lit < 12 || desktopPixelStats.avgLuma < 4 || mobilePixelStats.lit < 12 || mobilePixelStats.avgLuma < 4) {
     throw new Error(`Canvas appears blank: desktop=${JSON.stringify(desktopPixelStats)} mobile=${JSON.stringify(mobilePixelStats)}`);
   }
 
-  console.log(JSON.stringify({ canvasCount, twoDCanvasCount, meterCount, tunerCount, tunerNeedleCount, snapshotButtonCount, cumulativeButtonCount, webmButtonCount, stopButtonCount, startAnalysisButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, raindropsOptionCount, techniqueMapOptionCount, sideScrollerOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
+  console.log(JSON.stringify({ canvasCount, twoDCanvasCount, meterCount, tunerCount, tunerNeedleCount, snapshotButtonCount, cumulativeButtonCount, webmButtonCount, stopButtonCount, startAnalysisButtonCount, spectrumPanelCount, guitarGlyphOptionCount, fretPulseOptionCount, raindropsOptionCount, buffer32OptionCount, buffer64OptionCount, pluckSensitivityControlCount, pluckSeparationControlCount, techniqueMapOptionCount, sideScrollerOptionCount, stringResonatorOptionCount, techniqueShardOptionCount, desktopPixelStats, mobilePixelStats }, null, 2));
 } finally {
   server.kill('SIGTERM');
 }
