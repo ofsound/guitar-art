@@ -628,7 +628,7 @@ type CaptureSettings = {
   accumulationAlpha: number;
 };
 
-type RailKey = 'input' | 'layers' | 'dsp';
+type RailKey = 'input' | 'midi' | 'analysis' | 'layers' | 'dsp';
 type MinimizedRails = Record<RailKey, boolean>;
 type SignalAnalysisState = 'idle' | 'recording' | 'analyzing' | 'complete' | 'error';
 type LibraryRecordingState = 'idle' | 'recording' | 'saving' | 'error';
@@ -712,6 +712,8 @@ export function App() {
   const [midiConflict, setMidiConflict] = useState<MidiConflictState | null>(null);
   const [minimizedRails, setMinimizedRails] = useState<MinimizedRails>({
     input: false,
+    midi: false,
+    analysis: false,
     layers: false,
     dsp: false
   });
@@ -903,7 +905,7 @@ export function App() {
     setMidiAccessState('requesting');
     setMidiStatus('Requesting MIDI access...');
     try {
-      const access = await navigator.requestMIDIAccess({ sysex: false });
+      const access = await navigator.requestMIDIAccess({ sysex: false, software: true });
       midiAccessRef.current = access;
       setMidiAccessState('ready');
       access.onstatechange = () => refreshMidiInputs(access);
@@ -911,7 +913,7 @@ export function App() {
     } catch (error) {
       midiAccessRef.current = null;
       setMidiAccessState('denied');
-      setMidiStatus(error instanceof Error ? error.message : 'MIDI access was denied.');
+      setMidiStatus(formatMidiAccessError(error));
     }
   }
 
@@ -1579,6 +1581,8 @@ export function App() {
   const shellClassName = [
     'app-shell',
     minimizedRails.input ? 'input-minimized' : '',
+    minimizedRails.midi ? 'midi-minimized' : '',
+    minimizedRails.analysis ? 'analysis-minimized' : '',
     minimizedRails.layers ? 'layers-minimized' : '',
     minimizedRails.dsp ? 'dsp-minimized' : ''
   ]
@@ -1698,23 +1702,6 @@ export function App() {
           </button>
         </section>
 
-        <MidiLearnPanel
-          accessState={midiAccessState}
-          status={midiStatus}
-          inputs={midiInputs}
-          selectedInputId={selectedMidiInputId}
-          selectedChannel={selectedMidiChannel}
-          mappingCount={midiMappings.length}
-          learnLabel={midiLearn?.label ?? null}
-          learnRemainingSeconds={midiLearnRemainingSeconds}
-          onRequestAccess={requestMidiAccess}
-          onRefresh={() => refreshMidiInputs()}
-          onSelectInput={setSelectedMidiInputId}
-          onSelectChannel={setSelectedMidiChannel}
-          onCancelLearn={() => cancelMidiLearn()}
-          onForgetAll={forgetAllMidiMappings}
-        />
-
         <section className="control-group two-column">
           <label>
             <ControlLabel tooltip={CONTROL_TOOLTIPS.channel}>Channel</ControlLabel>
@@ -1780,20 +1767,58 @@ export function App() {
             Stop
           </button>
         </section>
-        <SignalAnalysisPanel
-          state={signalAnalysisState}
-          status={signalAnalysisStatus}
-          waveform={signalAnalysisWaveform}
-          onStart={startSignalAnalysis}
-          onStop={stopSignalAnalysis}
-          onOpenReport={() => setSignalAnalysisModalOpen(true)}
-          hasReport={Boolean(signalAnalysisReport)}
-        />
         <div className="sidebar-bottom">
           <SidebarGainMeter value={latest.rms} gateThreshold={config.gateThreshold} />
           <div className={`gate-pill ${latest.gate ? 'open' : ''}`}>{latest.gate ? 'Gate open' : 'Idle'}</div>
         </div>
           </>
+        ) : null}
+      </aside>
+
+      <aside className={`control-rail midi-rail ${minimizedRails.midi ? 'rail-minimized' : ''}`}>
+        <RailHeader
+          kicker="MIDI"
+          title={minimizedRails.midi ? undefined : 'MIDI learn'}
+          minimized={minimizedRails.midi}
+          onToggle={() => toggleRail('midi')}
+        />
+        {!minimizedRails.midi ? (
+          <MidiLearnPanel
+            accessState={midiAccessState}
+            status={midiStatus}
+            inputs={midiInputs}
+            selectedInputId={selectedMidiInputId}
+            selectedChannel={selectedMidiChannel}
+            mappingCount={midiMappings.length}
+            learnLabel={midiLearn?.label ?? null}
+            learnRemainingSeconds={midiLearnRemainingSeconds}
+            onRequestAccess={requestMidiAccess}
+            onRefresh={() => refreshMidiInputs()}
+            onSelectInput={setSelectedMidiInputId}
+            onSelectChannel={setSelectedMidiChannel}
+            onCancelLearn={() => cancelMidiLearn()}
+            onForgetAll={forgetAllMidiMappings}
+          />
+        ) : null}
+      </aside>
+
+      <aside className={`control-rail analysis-rail ${minimizedRails.analysis ? 'rail-minimized' : ''}`}>
+        <RailHeader
+          kicker="Audio Analysis"
+          title={minimizedRails.analysis ? undefined : 'Signal activity'}
+          minimized={minimizedRails.analysis}
+          onToggle={() => toggleRail('analysis')}
+        />
+        {!minimizedRails.analysis ? (
+          <SignalAnalysisPanel
+            state={signalAnalysisState}
+            status={signalAnalysisStatus}
+            waveform={signalAnalysisWaveform}
+            onStart={startSignalAnalysis}
+            onStop={stopSignalAnalysis}
+            onOpenReport={() => setSignalAnalysisModalOpen(true)}
+            hasReport={Boolean(signalAnalysisReport)}
+          />
         ) : null}
       </aside>
 
@@ -2932,6 +2957,13 @@ function formatMidiSource(source: MidiMappingSource): string {
 
 function formatMidiInputName(input: MIDIInput): string {
   return input.name || input.manufacturer || input.id || 'MIDI input';
+}
+
+function formatMidiAccessError(error: unknown): string {
+  if (error instanceof DOMException) {
+    return `${error.name}: ${error.message}`;
+  }
+  return error instanceof Error ? error.message : 'MIDI access was denied.';
 }
 
 function formatMidiTarget(target: MidiMappingTarget, layers: VisualLayer[]): string {

@@ -50,6 +50,7 @@ const audioHost = new AudioEngineHost();
 let mainWindow: BrowserWindow | null = null;
 let statusTimer: NodeJS.Timeout | null = null;
 let audioLibrary: AudioLibraryStore | null = null;
+const MIDI_PERMISSIONS = new Set(['midi', 'midiSysex']);
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -79,9 +80,9 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permission === 'midi');
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => MIDI_PERMISSIONS.has(permission));
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(permission === 'midi');
+    callback(MIDI_PERMISSIONS.has(permission));
   });
 
   if (process.platform === 'darwin') {

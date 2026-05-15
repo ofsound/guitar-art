@@ -22,17 +22,33 @@ input {
 }
 
 .app-shell {
-  --input-rail-width: 292px;
-  --layer-rail-width: 344px;
-  --capture-rail-width: 276px;
+  --input-rail-width: clamp(238px, 16vw, 292px);
+  --midi-rail-width: clamp(204px, 14vw, 276px);
+  --analysis-rail-width: clamp(204px, 14vw, 276px);
+  --layer-rail-width: clamp(288px, 19vw, 344px);
+  --capture-rail-width: clamp(230px, 15vw, 276px);
   display: grid;
-  grid-template-columns: var(--input-rail-width) var(--layer-rail-width) minmax(0, 1fr) var(--capture-rail-width);
+  grid-template-columns:
+    var(--input-rail-width)
+    var(--midi-rail-width)
+    var(--analysis-rail-width)
+    var(--layer-rail-width)
+    minmax(0, 1fr)
+    var(--capture-rail-width);
   height: 100%;
   background: #07090a;
 }
 
 .app-shell.input-minimized {
   --input-rail-width: 54px;
+}
+
+.app-shell.midi-minimized {
+  --midi-rail-width: 54px;
+}
+
+.app-shell.analysis-minimized {
+  --analysis-rail-width: 54px;
 }
 
 .app-shell.layers-minimized {
