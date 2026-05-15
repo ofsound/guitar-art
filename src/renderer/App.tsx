@@ -1600,8 +1600,6 @@ export function App() {
         />
         {!minimizedRails.input ? (
           <>
-        <TunerPanel features={latest} />
-
         <section className="control-group">
           <label>
             <ControlLabel tooltip={CONTROL_TOOLTIPS.inputSource}>Input source</ControlLabel>
@@ -1768,6 +1766,7 @@ export function App() {
           </button>
         </section>
         <div className="sidebar-bottom">
+          <TunerPanel features={latest} />
           <SidebarGainMeter value={latest.rms} gateThreshold={config.gateThreshold} />
           <div className={`gate-pill ${latest.gate ? 'open' : ''}`}>{latest.gate ? 'Gate open' : 'Idle'}</div>
         </div>
